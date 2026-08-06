@@ -167,6 +167,12 @@ acima: ruído, parcela, categoria, duplicata. Nesse formato ele ainda:
   tela como duas colunas e devolve os nomes todos primeiro e os valores depois.
   Entre as duas leituras vence a que reconhece mais lançamentos, então foto de
   fatura impressa continua saindo pelo caminho de antes;
+- **nunca funde duas compras numa só.** Se o reconhecimento estragar um valor, a
+  compra correspondente sai como linha **ignorada**, com o motivo escrito. A
+  alternativa — colá-la na compra de cima — apagaria um gasto sem avisar, e é
+  justamente o que não pode acontecer numa importação. Quem delimita uma compra
+  da outra é a legenda de baixo ("Cartão físico"). Pela mesma razão, o ponto é
+  aceito como separador decimal aqui: `R$ 60.00` é a vírgula lida errado;
 - **não declara total**: o print mostra um pedaço do mês, e comparar a soma com o
   total da fatura acusaria uma diferença que não é erro.
 

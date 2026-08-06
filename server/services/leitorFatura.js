@@ -360,6 +360,15 @@ const RUIDO = [
 // "BR 45,90" era consumido como se fosse o símbolo da moeda e sumia da descrição.
 const RX_VALOR = /(-)?(?:R\$)?\s?(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})(-)?/g;
 
+// Mesma coisa, aceitando o ponto como separador decimal — só para o print de
+// app, onde o reconhecimento troca a vírgula por ponto com frequência e um
+// valor não lido faz a compra inteira se fundir na de cima. Na fatura em PDF
+// esta versão não entra: lá "05.08" é data, e ela viraria R$ 5,08.
+//
+// A folga é segura porque grupo de milhar tem sempre três dígitos: "60.00" só
+// pode ser decimal, e "1.234" continua não sendo valor nenhum.
+const RX_VALOR_PONTO = /(-)?(?:R\$)?\s?(\d{1,3}(?:\.\d{3})*|\d+)[.,](\d{2})(?!\d)(-)?/g;
+
 const RX_DATA_BARRA = /^(\d{2})[/.](\d{2})(?:[/.](\d{2,4}))?\b/;
 const RX_DATA_TEXTO = /^(\d{1,2})\s*(?:de\s*)?(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)/i;
 
@@ -375,12 +384,16 @@ function lerValor(bruto, sinalNegativo) {
   return sinalNegativo ? -n : n;
 }
 
-/** Todos os valores monetários da linha, na ordem em que aparecem. */
-function acharValores(linha) {
-  RX_VALOR.lastIndex = 0;
+/**
+ * Todos os valores monetários da linha, na ordem em que aparecem.
+ * `aceitarPonto` só é usado na leitura de print de app — ver RX_VALOR_PONTO.
+ */
+function acharValores(linha, { aceitarPonto = false } = {}) {
+  const rx = aceitarPonto ? RX_VALOR_PONTO : RX_VALOR;
+  rx.lastIndex = 0;
   const negativo = /\b(cr[ée]dito|estorno|pagamento)\b/i.test(linha);
 
-  return [...linha.matchAll(RX_VALOR)].map((m) => ({
+  return [...linha.matchAll(rx)].map((m) => ({
     valor: lerValor({ inteiro: m[2], centavos: m[3] }, Boolean(m[1] || m[4]) || negativo),
     inicio: m.index,
     fim: m.index + m[0].length,
@@ -609,28 +622,35 @@ const limparPedaco = (texto) => texto
   .replace(/\s+R[$S]?$/i, '')
   .trim();
 
+// A linha traduzida é lida pela análise da fatura, que só entende vírgula
+// decimal — o ponto aceito na leitura do print para aqui.
+const comVirgulaDecimal = (valor) => valor.replace(/\.(\d{2})(-?)$/, ',$1$2');
+
 /**
  * Converte as linhas de um print de app em linhas no formato da fatura.
  *
  * Os pedaços de descrição ficam pendentes até aparecer um valor, porque é o
- * valor que fecha o lançamento. Quando um pedaço fica pendente e o que vem em
- * seguida é uma legenda, ele é continuação do lançamento anterior — o valor
- * tinha ficado na primeira linha do nome, e não na última.
+ * valor que fecha o lançamento. O que decide o destino de um pedaço que ficou
+ * pendente quando chega a legenda é se **já saiu um lançamento desde a legenda
+ * anterior** — porque a legenda é o rodapé de uma compra, e entre duas delas há
+ * exatamente uma:
+ *
+ *   saiu   → o valor estava na primeira linha do nome e o pedaço é o resto do
+ *            nome: ele completa esse lançamento.
+ *   não saiu → o bloco é uma compra inteira cujo valor o reconhecimento não
+ *            leu. Grudá-la na compra de cima fundiria duas em uma e apagaria um
+ *            valor sem avisar; ela sai como linha ignorada, que o usuário vê.
  */
 function normalizarListaDeApp(linhas) {
   const lancamentos = [];
   const ignoradas = [];
   let dia = null;
   let pendentes = [];
+  let desdeALegenda = 0;
 
   const largar = (texto, motivo, indice) => ignoradas.push({ linha: indice + 1, texto, motivo });
   const ultimo = () => lancamentos[lancamentos.length - 1];
 
-  /**
-   * Fecha os pedaços soltos. `anexar` diz para onde eles vão: no meio da lista
-   * são continuação do lançamento de cima; no fim do arquivo são os botões do
-   * rodapé ("Parcelar", "Pagar"), que não podem entrar em descrição nenhuma.
-   */
   const despejarPendentes = ({ anexar, motivo, indice }) => {
     if (pendentes.length === 0) return;
     if (anexar && ultimo()) ultimo().partes.push(...pendentes);
@@ -644,7 +664,10 @@ function normalizarListaDeApp(linhas) {
 
     const cabecalho = lerCabecalhoDeDia(linha);
     if (cabecalho) {
-      despejarPendentes({ anexar: true, motivo: 'fora da lista', indice });
+      despejarPendentes({
+        anexar: desdeALegenda > 0, motivo: 'compra sem valor reconhecido', indice,
+      });
+      desdeALegenda = 0;
       dia = cabecalho.data;
       if (cabecalho.resto) pendentes.push(cabecalho.resto);
       return;
@@ -656,7 +679,10 @@ function normalizarListaDeApp(linhas) {
     if (dia === null) { largar(linha, 'topo da tela do aplicativo', indice); return; }
 
     if (ehLegendaDoApp(linha)) {
-      despejarPendentes({ anexar: true, motivo: 'legenda do aplicativo', indice });
+      despejarPendentes({
+        anexar: desdeALegenda > 0, motivo: 'compra sem valor reconhecido', indice,
+      });
+      desdeALegenda = 0;
       largar(linha, 'legenda do aplicativo', indice);
       return;
     }
@@ -673,7 +699,7 @@ function normalizarListaDeApp(linhas) {
     // e ler só o último, como se faz na fatura, apagaria as de cima. Aqui cada
     // valor fecha o seu próprio lançamento, e a descrição de cada um é o texto
     // que vem antes dele.
-    const valores = acharValores(linha);
+    const valores = acharValores(linha, { aceitarPonto: true });
     if (valores.length === 0) { pendentes.push(linha); return; }
 
     let inicio = 0;
@@ -681,8 +707,9 @@ function normalizarListaDeApp(linhas) {
       lancamentos.push({
         data: dia,
         partes: [...(ordem === 0 ? pendentes : []), linha.slice(inicio, valor.inicio)],
-        valor: linha.slice(valor.inicio, valor.fim).trim(),
+        valor: comVirgulaDecimal(linha.slice(valor.inicio, valor.fim).trim()),
       });
+      desdeALegenda += 1;
       inicio = valor.fim;
     });
     pendentes = [];
