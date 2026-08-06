@@ -72,6 +72,7 @@ export default function ImportarFatura({ aoImportar }) {
   const selecionados = itens.filter((i) => i.selecionado);
   const total = selecionados.reduce((t, i) => t + (Number(i.valor) || 0), 0);
   const duplicatas = itens.filter((i) => i.duplicata).length;
+  const semData = selecionados.filter((i) => !i.data).length;
 
   // Quando a fatura declara o próprio total, a diferença é o melhor sinal de
   // que alguma linha ficou para trás — ou de que entrou o que não devia.
@@ -202,6 +203,16 @@ export default function ImportarFatura({ aoImportar }) {
             </div>
           )}
 
+          {semData > 0 && (
+            <div className="aviso" style={{ marginBottom: 14 }}>
+              <b>{semData} {semData === 1 ? 'lançamento está' : 'lançamentos estão'} sem data.</b>{' '}
+              O arquivo não trazia a data desses — num print, é o que acontece com as compras que
+              ficaram acima do primeiro cabeçalho de dia. Preencha na coluna <b>Data</b> se quiser;
+              a importação funciona sem ela, e o gasto entra em {rotuloMes(mes, { curto: true })} do
+              mesmo jeito.
+            </div>
+          )}
+
           {duplicatas > 0 && (
             <div className="aviso" style={{ marginBottom: 14 }}>
               <b>{duplicatas} lançamentos já parecem existir</b> neste mês e neste cartão, com a mesma
@@ -265,8 +276,18 @@ export default function ImportarFatura({ aoImportar }) {
                         onChange={(e) => alterar(i.id, { selecionado: e.target.checked })}
                       />
                     </td>
-                    <td className="fraco" style={{ whiteSpace: 'nowrap' }}>
-                      {i.data ? i.data.split('-').reverse().join('/') : '—'}
+                    <td>
+                      {/* Editável porque nem todo arquivo entrega a data: um
+                          print que começa com a lista já rolada tem compras
+                          acima do primeiro cabeçalho de dia. Elas chegam em
+                          branco e são preenchidas aqui, antes de gravar. */}
+                      <input
+                        type="date"
+                        value={i.data || ''}
+                        onChange={(e) => alterar(i.id, { data: e.target.value || null })}
+                        style={{ width: 150 }}
+                        aria-label={`Data de ${i.descricao}`}
+                      />
                     </td>
                     <td style={{ minWidth: 210 }}>
                       <input

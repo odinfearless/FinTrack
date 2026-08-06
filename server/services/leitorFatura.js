@@ -641,6 +641,17 @@ const comVirgulaDecimal = (valor) => valor.replace(/\.(\d{2})(-?)$/, ',$1$2');
 const temTextoUtil = (texto) => /\p{L}{3}/u.test(texto);
 
 /**
+ * Conserta a vírgula do valor lida como barra: "-R$ 24/13".
+ *
+ * Só vale com o "R$" na frente. Solto, "4/10" é parcela — e trocar a barra por
+ * vírgula ali transformaria a parcela de uma compra em R$ 4,10.
+ */
+const consertarSeparador = (linha) => linha.replace(
+  /(R[$S]\s?(?:\d{1,3}(?:\.\d{3})*|\d+))\/(\d{2})(?!\d)/gi,
+  '$1,$2',
+);
+
+/**
  * De que lado do valor mora o nome do estabelecimento.
  *
  * Há dois desenhos de lista por aí, e a diferença não é cosmética:
@@ -701,12 +712,16 @@ function normalizarListaDeApp(linhas) {
   const largar = (texto, motivo, indice) => ignoradas.push({ linha: indice + 1, texto, motivo });
   const ultimo = () => lancamentos[lancamentos.length - 1];
 
-  /** Completa o nome da compra de cima com o que veio depois do valor dela. */
+  /**
+   * Completa o nome da compra de cima com o que veio depois do valor dela.
+   * Sem compra nenhuma ainda, o bloco é a moldura do topo; passando do tamanho
+   * de um nome, o excedente é rodapé de tela.
+   */
   const completarAnterior = (blocos, indice) => {
     const alvo = ultimo();
-    const nome = alvo ? blocos.slice(0, MAX_LINHAS_DE_NOME) : [];
-    const sobra = alvo ? blocos.slice(MAX_LINHAS_DE_NOME) : blocos;
-    if (nome.length > 0) alvo.partes.push(...nome);
+    if (!alvo) { largar(blocos.join(' '), 'topo da tela do aplicativo', indice); return; }
+    alvo.partes.push(...blocos.slice(0, MAX_LINHAS_DE_NOME));
+    const sobra = blocos.slice(MAX_LINHAS_DE_NOME);
     if (sobra.length > 0) largar(sobra.join(' '), 'rodapé da tela do aplicativo', indice);
   };
 
@@ -719,7 +734,7 @@ function normalizarListaDeApp(linhas) {
   };
 
   linhas.forEach((bruta, indice) => {
-    const linha = bruta.trim();
+    const linha = consertarSeparador(bruta.trim());
     if (!linha) return;
 
     const cabecalho = lerCabecalhoDeDia(linha);
@@ -732,11 +747,6 @@ function normalizarListaDeApp(linhas) {
       if (cabecalho.resto) pendentes.push(cabecalho.resto);
       return;
     }
-
-    // Antes do primeiro cabeçalho está a moldura do app: relógio, nome do
-    // cartão, abas de mês. As abas trazem o total de cada mês, e sem este corte
-    // "R$ 11.339,84" entraria na lista como se fosse uma compra.
-    if (dia === null) { largar(linha, 'topo da tela do aplicativo', indice); return; }
 
     if (ehLegendaDoApp(linha) || RX_BOTAO_DO_APP.test(linha)) {
       despejarPendentes({
@@ -760,6 +770,21 @@ function normalizarListaDeApp(linhas) {
     // lançamento.
     const valores = acharValores(linha, { aceitarPonto: true });
     if (valores.length === 0) { pendentes.push(linha); return; }
+
+    // Acima do primeiro cabeçalho de dia mora a moldura do app — relógio, nome
+    // do cartão, abas de mês —, mas também as compras de um print que começou
+    // com a lista já rolada. Quem separa os dois é a quantidade de valores: a
+    // faixa de abas traz o total de vários meses numa linha só, e compra tem um
+    // valor só. As compras dali entram sem data, para o usuário preencher; a
+    // faixa cai fora, senão "R$ 11.339,84" viraria um gasto de cinco dígitos.
+    if (dia === null && valores.length > 1) {
+      if (pendentes.length > 0) {
+        largar(pendentes.join(' '), 'topo da tela do aplicativo', indice);
+        pendentes = [];
+      }
+      largar(linha, 'topo da tela do aplicativo', indice);
+      return;
+    }
 
     // Onde o nome fica embaixo do valor, o que sobrou pendente é o fim do nome
     // da compra anterior — menos a última linha, que é a categoria escrita em
@@ -810,11 +835,14 @@ function normalizarListaDeApp(linhas) {
   };
 
   return {
+    // Sem data, a linha sai só com descrição e valor: a análise adiante não
+    // acha data nenhuma e o lançamento chega à tela de revisão com o campo em
+    // branco, para ser preenchido antes de entrar no banco.
     linhas: lancamentos.map((l) => [
       l.data,
       ...l.partes.map(limparPedaco).filter(Boolean),
       comSinalDaFatura(l.valor),
-    ].join(' ')),
+    ].filter(Boolean).join(' ')),
     ignoradas,
   };
 }

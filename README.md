@@ -105,7 +105,11 @@ Na tela **Importar gastos**, o primeiro bloco aceita a fatura direto:
    Serve **qualquer cor viva** — vermelho, verde, azul, rosa — e cores diferentes
    podem conviver no mesmo arquivo. Vale marcar várias áreas, em várias páginas.
    Sem marcação, o arquivo inteiro é lido.
-4. Confira a tabela: descrição, valor, categoria e tipo são editáveis ali mesmo.
+4. Confira a tabela: **data**, descrição, valor, categoria e tipo são editáveis
+   ali mesmo. Quando o arquivo não entrega a data de um lançamento, ele chega
+   com o campo em branco — nunca com uma data chutada — e a tela avisa quantos
+   estão assim. A data é opcional: sem ela o gasto entra no mês da fatura do
+   mesmo jeito.
 5. Confirme.
 
 Sem nenhuma marcação vale a heurística, que tenta descartar totais e rodapés
@@ -171,10 +175,16 @@ vizinhas. Daí traduz para o formato de fatura — cada compra vira uma linha
 "dd/mm descrição valor" — e daí para frente vale tudo que já está descrito
 acima: ruído, parcela, categoria, duplicata. Nesse formato ele ainda:
 
-- **descarta a moldura do app**: o que vem antes do primeiro cabeçalho de dia
-  (relógio, nome do cartão, abas de mês) e os botões do rodapé ("Parcelar
-  fatura", "Pagar"). Sem esse corte, o total que aparece na aba do mês entraria
-  na lista como se fosse uma compra, e o botão viraria parte do nome da última;
+- **descarta a moldura do app**: o relógio, o nome do cartão, a faixa de abas de
+  mês e os botões do rodapé ("Parcelar fatura", "Pagar"). Sem esse corte, o
+  total que aparece na aba do mês entraria como se fosse uma compra, e o botão
+  viraria parte do nome da última. O que separa a faixa de abas de uma compra é
+  a quantidade de valores na linha: a faixa traz o total de vários meses de uma
+  vez, e compra tem um valor só;
+- **aceita compra sem data**. Num print que começa com a lista já rolada, as
+  primeiras compras ficam acima do primeiro cabeçalho de dia e não há data para
+  elas: entram com o campo em branco, para ser preenchido na revisão, em vez de
+  serem descartadas ou herdarem a data errada;
 - **inverte o sinal quando o app escreve despesa com menos** (`-R$ 78,98` para
   uma compra comum). O conserto é inverter todos, e não apagar o menos: numa
   lista com um estorno no meio, apagar deixaria a compra certa e o estorno
