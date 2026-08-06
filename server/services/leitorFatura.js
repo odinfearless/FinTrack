@@ -181,6 +181,50 @@ const emLinhas = (texto) => texto.split('\n')
   .filter(Boolean);
 
 /**
+ * Refaz as linhas a partir da posição das palavras na imagem.
+ *
+ * O reconhecimento faz análise de layout antes de ler, e numa tela de app ele
+ * às vezes enxerga duas colunas — nomes de um lado, valores do outro. Quando
+ * isso acontece, o texto corrido sai com todos os nomes primeiro e todos os
+ * valores depois, e nenhum lançamento fica junto do seu valor.
+ *
+ * As coordenadas de cada palavra não têm esse problema: palavras cujo centro
+ * está na mesma altura são a mesma linha, e dentro dela a ordem é a do X — o
+ * mesmo raciocínio que já monta as linhas de um PDF.
+ */
+function linhasPorPosicao(dados) {
+  const palavras = [];
+  for (const bloco of dados.blocks || []) {
+    for (const paragrafo of bloco.paragraphs || []) {
+      for (const linha of paragrafo.lines || []) {
+        for (const palavra of linha.words || []) {
+          const texto = (palavra.text || '').trim();
+          if (texto && palavra.bbox) palavras.push({ texto, ...palavra.bbox });
+        }
+      }
+    }
+  }
+  if (palavras.length < 4) return null;
+
+  // A tolerância sai da própria imagem: print de celular e foto de fatura têm
+  // escalas muito diferentes, e um número fixo de pixels serviria só a uma.
+  const alturas = palavras.map((p) => p.y1 - p.y0).sort((a, b) => a - b);
+  const tolerancia = Math.max((alturas[Math.floor(alturas.length / 2)] || 10) * 0.6, 4);
+
+  const linhas = [];
+  for (const p of palavras.sort((a, b) => (a.y0 + a.y1) - (b.y0 + b.y1))) {
+    const centro = (p.y0 + p.y1) / 2;
+    const atual = linhas[linhas.length - 1];
+    if (atual && centro - atual.centro <= tolerancia) atual.palavras.push(p);
+    else linhas.push({ centro, palavras: [p] });
+  }
+
+  return linhas
+    .map((l) => l.palavras.sort((a, b) => a.x0 - b.x0).map((p) => p.texto).join(' ').trim())
+    .filter(Boolean);
+}
+
+/**
  * Imagem é sempre lida por inteiro: a marcação vermelha é reconhecida no traço
  * vetorial do PDF, e numa foto ela seria só pixels — detectá-la exigiria varrer
  * a imagem, o que é outro problema.
@@ -195,9 +239,25 @@ async function extrairDeImagem(buffer) {
     throw erro;
   }
 
+  let worker;
   try {
-    const { data } = await Tesseract.recognize(buffer, 'por');
-    return { linhas: emLinhas(data.text), paginas: 1 };
+    worker = await Tesseract.createWorker('por');
+    // A posição das palavras vem em `blocks`, e só quando é pedida — o atalho
+    // `Tesseract.recognize` devolve o texto corrido e mais nada.
+    const { data } = await worker.recognize(buffer, {}, { text: true, blocks: true });
+
+    const doTexto = emLinhas(data.text);
+    const porPosicao = linhasPorPosicao(data);
+
+    // Entre as duas leituras vence a que reconhece mais lançamentos. É o único
+    // critério que não depende de adivinhar o layout: quando o texto corrido já
+    // vinha certo — foto de fatura impressa —, é ele que ganha; quando o app foi
+    // lido em duas colunas e nenhum valor ficou junto do seu nome, ganha a
+    // reconstrução por posição.
+    const contar = (linhas) => (linhas ? analisar(linhas, { mes: '2000-01' }).itens.length : -1);
+    const linhas = contar(porPosicao) > contar(doTexto) ? porPosicao : doTexto;
+
+    return { linhas, paginas: 1 };
   } catch (causa) {
     const erro = new Error(
       'Não foi possível ler a imagem. O reconhecimento de texto baixa um pacote de idioma '
@@ -206,6 +266,10 @@ async function extrairDeImagem(buffer) {
     );
     erro.status = 502;
     throw erro;
+  } finally {
+    // O worker é um processo à parte: sem encerrá-lo, cada leitura deixaria um
+    // para trás e o servidor iria acumulando memória a cada importação.
+    await worker?.terminate();
   }
 }
 
@@ -296,6 +360,15 @@ const RUIDO = [
 // "BR 45,90" era consumido como se fosse o símbolo da moeda e sumia da descrição.
 const RX_VALOR = /(-)?(?:R\$)?\s?(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})(-)?/g;
 
+// Mesma coisa, aceitando o ponto como separador decimal — só para o print de
+// app, onde o reconhecimento troca a vírgula por ponto com frequência e um
+// valor não lido faz a compra inteira se fundir na de cima. Na fatura em PDF
+// esta versão não entra: lá "05.08" é data, e ela viraria R$ 5,08.
+//
+// A folga é segura porque grupo de milhar tem sempre três dígitos: "60.00" só
+// pode ser decimal, e "1.234" continua não sendo valor nenhum.
+const RX_VALOR_PONTO = /(-)?(?:R\$)?\s?(\d{1,3}(?:\.\d{3})*|\d+)[.,](\d{2})(?!\d)(-)?/g;
+
 const RX_DATA_BARRA = /^(\d{2})[/.](\d{2})(?:[/.](\d{2,4}))?\b/;
 const RX_DATA_TEXTO = /^(\d{1,2})\s*(?:de\s*)?(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)/i;
 
@@ -311,19 +384,26 @@ function lerValor(bruto, sinalNegativo) {
   return sinalNegativo ? -n : n;
 }
 
-/** Último valor monetário da linha — em fatura, o valor mora à direita. */
-function acharValor(linha) {
-  RX_VALOR.lastIndex = 0;
-  const achados = [...linha.matchAll(RX_VALOR)];
-  if (achados.length === 0) return null;
+/**
+ * Todos os valores monetários da linha, na ordem em que aparecem.
+ * `aceitarPonto` só é usado na leitura de print de app — ver RX_VALOR_PONTO.
+ */
+function acharValores(linha, { aceitarPonto = false } = {}) {
+  const rx = aceitarPonto ? RX_VALOR_PONTO : RX_VALOR;
+  rx.lastIndex = 0;
+  const negativo = /\b(cr[ée]dito|estorno|pagamento)\b/i.test(linha);
 
-  const m = achados[achados.length - 1];
-  const negativo = Boolean(m[1] || m[4]) || /\b(cr[ée]dito|estorno|pagamento)\b/i.test(linha);
-  return {
-    valor: lerValor({ inteiro: m[2], centavos: m[3] }, negativo),
+  return [...linha.matchAll(rx)].map((m) => ({
+    valor: lerValor({ inteiro: m[2], centavos: m[3] }, Boolean(m[1] || m[4]) || negativo),
     inicio: m.index,
     fim: m.index + m[0].length,
-  };
+  }));
+}
+
+/** Último valor monetário da linha — em fatura, o valor mora à direita. */
+function acharValor(linha) {
+  const achados = acharValores(linha);
+  return achados.length > 0 ? achados[achados.length - 1] : null;
 }
 
 function acharData(linha, mesReferencia) {
@@ -452,6 +532,321 @@ function limparDescricao(bruta) {
     .trim();
 }
 
+/* ----------------------- extrato em lista de aplicativo ------------------- */
+
+/**
+ * Print de app de banco não tem a estrutura de uma fatura em PDF.
+ *
+ * Na fatura, cada lançamento é uma linha inteira: "05/08 MERCADO 45,90". No app
+ * a mesma informação vem espalhada — a data é um cabeçalho de dia que vale para
+ * todos os lançamentos abaixo dele, o nome do estabelecimento quebra em duas ou
+ * três linhas, o valor fica à direita da linha em que o nome termina, e embaixo
+ * de cada compra ainda vem uma legenda ("Cartão físico").
+ *
+ * O que este bloco faz é traduzir um formato no outro: cada lançamento vira uma
+ * linha "dd/mm descrição valor" e daí para frente vale a análise que já existe
+ * — ruído, parcela, categoria, duplicata, tudo igual para os dois casos.
+ */
+
+// "2 de agosto", "12 de dezembro de 2025", "Domingo, 2 de ago" — o dia da
+// semana na frente é como o Inter escreve, e o mês tanto faz vir por extenso
+// como abreviado. O ano quase nunca aparece: o app o omite dentro do ano
+// corrente, e quem o completa depois é o mês da fatura.
+//
+// O espaço entre o dia e o "de" é opcional porque o reconhecimento o perde com
+// frequência — "1 de agosto" sai "1de agosto". Sem essa folga o cabeçalho deixa
+// de ser cabeçalho: a data para de avançar e o dia inteiro vai para a
+// competência errada, colado na descrição da compra seguinte. Já o espaço
+// depois do "de" continua obrigatório, senão "1demais" viraria 1º de maio.
+const RX_CABECALHO_DIA = new RegExp(
+  '^(?:(?:segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:[-\\s]?feira)?,?\\s+)?'
+  + '(\\d{1,2})\\s*de\\s+([a-zà-ú]{3,9})\\.?(?:\\s+de\\s+(\\d{4}))?\\b',
+  'i',
+);
+
+function lerCabecalhoDeDia(linha) {
+  const m = linha.match(RX_CABECALHO_DIA);
+  if (!m) return null;
+
+  const dia = Number(m[1]);
+  // O nome do mês por extenso tem sempre a mesma abreviação de três letras que
+  // a fatura usa ("agosto" → "ago", "março" → "mar"), então a tabela é a mesma.
+  const mes = MESES_CURTOS[normalizar(m[2]).slice(0, 3)];
+  if (!mes || dia < 1 || dia > 31) return null;
+
+  return {
+    data: `${String(dia).padStart(2, '0')}/${String(mes).padStart(2, '0')}${m[3] ? `/${m[3]}` : ''}`,
+    resto: linha.slice(m[0].length).trim(),
+  };
+}
+
+// Legendas que o app escreve embaixo do lançamento. Além de não serem compras,
+// elas marcam o fim do lançamento de cima — é por isso que valem de delimitador.
+const LEGENDAS_DO_APP = [
+  /^cart[ãa]o\s+(f[íi]sico|virtual|adicional|digital)/i,
+  /^compra\s+(parcelada|internacional|no\s+exterior|aprovada)/i,
+  /^(pagamento|compra)\s+(no\s+)?(cr[ée]dito|d[ée]bito)/i,
+  /^(em\s+processamento|pendente|aprovad[ao])\b/i,
+];
+
+const ehLegendaDoApp = (linha) => LEGENDAS_DO_APP.some((rx) => rx.test(linha));
+
+// "Parcela 2 de 10", "2 de 10" ou "2/10" sozinhos, embaixo do nome da compra.
+const RX_LINHA_DE_PARCELA = /^(?:parcela\s*)?\d{1,2}\s*(?:\/|\s+de\s+)\s*\d{1,2}$/i;
+
+// Botões do rodapé da tela. Merecem regra própria porque caem exatamente onde
+// o nome do estabelecimento cairia — logo abaixo do último lançamento — e sem
+// isso "Parcelar fatura" viraria parte do nome da última compra.
+const RX_BOTAO_DO_APP = /^(pagar|parcelar|antecipar|ver\s+(mais|fatura|todos))\b/i;
+
+/**
+ * É um extrato de app, e não uma fatura?
+ *
+ * O sinal é a combinação de duas coisas: existe cabeçalho de dia sozinho numa
+ * linha, e as linhas de valor **não** trazem data própria. Na fatura em PDF é o
+ * contrário — toda linha de valor começa pela data da compra —, e é isso que
+ * impede esta tradução de atropelar o formato que já funciona.
+ */
+function pareceListaDeApp(linhas, mes) {
+  const cabecalhos = linhas.filter((l) => lerCabecalhoDeDia(l.trim())?.resto === '');
+  if (cabecalhos.length === 0) return false;
+
+  const comValor = linhas.filter((l) => acharValor(l));
+  if (comValor.length < 2) return false;
+
+  const semDataPropria = comValor.filter((l) => !acharData(l.trim(), mes));
+  return semDataPropria.length >= comValor.length * 0.7;
+}
+
+/**
+ * Limpa um pedaço de descrição.
+ *
+ * A limpeza é por pedaço, e não na descrição já montada: o "R$" que o OCR leu
+ * como "RS" fica no fim da linha de onde o valor saiu, que nem sempre é a
+ * última — quando o valor vem alinhado com a primeira linha do nome, esse
+ * resto acabaria no meio da descrição.
+ */
+const limparPedaco = (texto) => texto
+  // A seta que o app põe no fim da linha vira ">" ou "›" no reconhecimento.
+  .replace(/[>›»]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .replace(/\s+R[$S]?$/i, '')
+  .trim();
+
+// A linha traduzida é lida pela análise da fatura, que só entende vírgula
+// decimal — o ponto aceito na leitura do print para aqui.
+const comVirgulaDecimal = (valor) => valor.replace(/\.(\d{2})(-?)$/, ',$1$2');
+
+/** Tem nome de gente ou de loja aqui, ou é sobra de ícone ("O", "WD", "Vi)")? */
+const temTextoUtil = (texto) => /\p{L}{3}/u.test(texto);
+
+/**
+ * Conserta a vírgula do valor lida como barra: "-R$ 24/13".
+ *
+ * Só vale com o "R$" na frente. Solto, "4/10" é parcela — e trocar a barra por
+ * vírgula ali transformaria a parcela de uma compra em R$ 4,10.
+ */
+const consertarSeparador = (linha) => linha.replace(
+  /(R[$S]\s?(?:\d{1,3}(?:\.\d{3})*|\d+))\/(\d{2})(?!\d)/gi,
+  '$1,$2',
+);
+
+/**
+ * De que lado do valor mora o nome do estabelecimento.
+ *
+ * Há dois desenhos de lista por aí, e a diferença não é cosmética:
+ *
+ *   Itaú   NOME DA LOJA          R$ 45,90     ← valor à direita, mesma linha
+ *   Inter  Restaurantes                       ← categoria
+ *          -R$ 21,00                          ← valor sozinho na linha
+ *          FRUTAH SIMPLESMENT SAO             ← nome, embaixo
+ *
+ * É isso que decide para onde vai um trecho solto entre duas compras: no
+ * primeiro desenho ele é o nome da compra de baixo; no segundo, o fim do nome
+ * da compra de cima. Errar o lado funde as duas.
+ *
+ * O sinal é a própria linha do valor: quando ela carrega texto de verdade, o
+ * nome está nela; quando vem só com o valor e sobra de ícone, o nome está fora.
+ */
+function nomeDepoisDoValor(linhas) {
+  const primeiro = linhas.findIndex((l) => lerCabecalhoDeDia(l.trim()));
+  const daLista = primeiro < 0 ? linhas : linhas.slice(primeiro + 1);
+
+  const comValor = daLista
+    .map((l) => ({ texto: l.trim(), valores: acharValores(l.trim(), { aceitarPonto: true }) }))
+    .filter((l) => l.valores.length > 0);
+  if (comValor.length < 2) return false;
+
+  const comNome = comValor.filter((l) => temTextoUtil(l.texto.slice(0, l.valores[0].inicio)));
+  return comNome.length * 2 < comValor.length;
+}
+
+// Quantas linhas o nome ocupa depois do valor. Duas cobrem o
+// "ESTABELECIMENTO / CIDADE BRA" desses aplicativos — o que passar disso é
+// rodapé de tela ("Parcelar fatura"), e não nome de loja.
+const MAX_LINHAS_DE_NOME = 2;
+
+/**
+ * Converte as linhas de um print de app em linhas no formato da fatura.
+ *
+ * Os pedaços de descrição ficam pendentes até aparecer um valor, porque é o
+ * valor que fecha o lançamento. O que decide o destino de um pedaço que ficou
+ * pendente quando chega a legenda é se **já saiu um lançamento desde a legenda
+ * anterior** — porque a legenda é o rodapé de uma compra, e entre duas delas há
+ * exatamente uma:
+ *
+ *   saiu   → o valor estava na primeira linha do nome e o pedaço é o resto do
+ *            nome: ele completa esse lançamento.
+ *   não saiu → o bloco é uma compra inteira cujo valor o reconhecimento não
+ *            leu. Grudá-la na compra de cima fundiria duas em uma e apagaria um
+ *            valor sem avisar; ela sai como linha ignorada, que o usuário vê.
+ */
+function normalizarListaDeApp(linhas) {
+  const nomeDepois = nomeDepoisDoValor(linhas);
+  const lancamentos = [];
+  const ignoradas = [];
+  let dia = null;
+  let pendentes = [];
+  let desdeALegenda = 0;
+
+  const largar = (texto, motivo, indice) => ignoradas.push({ linha: indice + 1, texto, motivo });
+  const ultimo = () => lancamentos[lancamentos.length - 1];
+
+  /**
+   * Completa o nome da compra de cima com o que veio depois do valor dela.
+   * Sem compra nenhuma ainda, o bloco é a moldura do topo; passando do tamanho
+   * de um nome, o excedente é rodapé de tela.
+   */
+  const completarAnterior = (blocos, indice) => {
+    const alvo = ultimo();
+    if (!alvo) { largar(blocos.join(' '), 'topo da tela do aplicativo', indice); return; }
+    alvo.partes.push(...blocos.slice(0, MAX_LINHAS_DE_NOME));
+    const sobra = blocos.slice(MAX_LINHAS_DE_NOME);
+    if (sobra.length > 0) largar(sobra.join(' '), 'rodapé da tela do aplicativo', indice);
+  };
+
+  const despejarPendentes = ({ anexar, motivo, indice }) => {
+    if (pendentes.length === 0) return;
+    if (nomeDepois) completarAnterior(pendentes, indice);
+    else if (anexar && ultimo()) ultimo().partes.push(...pendentes);
+    else largar(pendentes.join(' '), motivo, indice);
+    pendentes = [];
+  };
+
+  linhas.forEach((bruta, indice) => {
+    const linha = consertarSeparador(bruta.trim());
+    if (!linha) return;
+
+    const cabecalho = lerCabecalhoDeDia(linha);
+    if (cabecalho) {
+      despejarPendentes({
+        anexar: desdeALegenda > 0, motivo: 'compra sem valor reconhecido', indice,
+      });
+      desdeALegenda = 0;
+      dia = cabecalho.data;
+      if (cabecalho.resto) pendentes.push(cabecalho.resto);
+      return;
+    }
+
+    if (ehLegendaDoApp(linha) || RX_BOTAO_DO_APP.test(linha)) {
+      despejarPendentes({
+        anexar: desdeALegenda > 0, motivo: 'compra sem valor reconhecido', indice,
+      });
+      desdeALegenda = 0;
+      largar(linha, ehLegendaDoApp(linha) ? 'legenda do aplicativo' : 'botão da tela', indice);
+      return;
+    }
+
+    // A parcela vem numa linha própria, embaixo do nome; grudada na descrição
+    // ela é lida pelo mesmo caminho que lê "PARC 03/10" na fatura.
+    if (RX_LINHA_DE_PARCELA.test(linha) && pendentes.length === 0 && ultimo()) {
+      ultimo().partes.push(linha);
+      return;
+    }
+
+    // Numa lista de app cada linha tem um valor só. Dois ou mais significam que
+    // o reconhecimento juntou compras numa linha — e ler só o último, como se
+    // faz na fatura, apagaria as de cima. Aqui cada valor fecha o seu próprio
+    // lançamento.
+    const valores = acharValores(linha, { aceitarPonto: true });
+    if (valores.length === 0) { pendentes.push(linha); return; }
+
+    // Acima do primeiro cabeçalho de dia mora a moldura do app — relógio, nome
+    // do cartão, abas de mês —, mas também as compras de um print que começou
+    // com a lista já rolada. Quem separa os dois é a quantidade de valores: a
+    // faixa de abas traz o total de vários meses numa linha só, e compra tem um
+    // valor só. As compras dali entram sem data, para o usuário preencher; a
+    // faixa cai fora, senão "R$ 11.339,84" viraria um gasto de cinco dígitos.
+    if (dia === null && valores.length > 1) {
+      if (pendentes.length > 0) {
+        largar(pendentes.join(' '), 'topo da tela do aplicativo', indice);
+        pendentes = [];
+      }
+      largar(linha, 'topo da tela do aplicativo', indice);
+      return;
+    }
+
+    // Onde o nome fica embaixo do valor, o que sobrou pendente é o fim do nome
+    // da compra anterior — menos a última linha, que é a categoria escrita em
+    // cima desta compra. Onde o nome fica na mesma linha do valor, tudo o que
+    // estava pendente é o começo do nome desta compra.
+    let antes = pendentes;
+    if (nomeDepois) {
+      antes = pendentes.slice(-1);
+      completarAnterior(pendentes.slice(0, -1), indice);
+    }
+    pendentes = [];
+
+    let inicio = 0;
+    valores.forEach((valor, ordem) => {
+      // Sobra de ícone ("O", "WD", "Vi)") não é nome de loja. Só é descartada
+      // no desenho em que o nome mora fora da linha do valor; no outro, o texto
+      // à esquerda do valor é justamente o nome.
+      const naLinha = linha.slice(inicio, valor.inicio);
+      lancamentos.push({
+        data: dia,
+        partes: [
+          ...(ordem === 0 ? antes : []),
+          ...(nomeDepois && !temTextoUtil(naLinha) ? [] : [naLinha]),
+        ],
+        valor: comVirgulaDecimal(linha.slice(valor.inicio, valor.fim).trim()),
+      });
+      desdeALegenda += 1;
+      inicio = valor.fim;
+    });
+  });
+
+  despejarPendentes({ anexar: false, motivo: 'rodapé da tela do aplicativo', indice: linhas.length });
+
+  // Alguns apps escrevem toda despesa com sinal de menos ("-R$ 78,98"): ali o
+  // menos quer dizer saída de dinheiro, e não crédito. Quando é assim, a
+  // convenção inteira está invertida em relação à fatura, e o conserto é
+  // inverter o sinal de todos — não só apagar o menos das compras. Numa lista
+  // com um estorno no meio, apagar deixaria a compra certa e o estorno errado.
+  //
+  // O que denuncia a inversão é a maioria: fatura tem uma compra atrás da outra
+  // e um crédito de vez em quando, então uma lista majoritariamente negativa só
+  // pode estar escrevendo saída com menos.
+  const negativos = lancamentos.filter((l) => l.valor.startsWith('-')).length;
+  const menosEhSaida = lancamentos.length >= 2 && negativos * 2 > lancamentos.length;
+  const comSinalDaFatura = (valor) => {
+    if (!menosEhSaida) return valor;
+    return valor.startsWith('-') ? valor.replace(/^-\s*/, '') : `-${valor}`;
+  };
+
+  return {
+    // Sem data, a linha sai só com descrição e valor: a análise adiante não
+    // acha data nenhuma e o lançamento chega à tela de revisão com o campo em
+    // branco, para ser preenchido antes de entrar no banco.
+    linhas: lancamentos.map((l) => [
+      l.data,
+      ...l.partes.map(limparPedaco).filter(Boolean),
+      comSinalDaFatura(l.valor),
+    ].filter(Boolean).join(' ')),
+    ignoradas,
+  };
+}
+
 /**
  * Sugere categoria comparando a descrição com o nome das categorias
  * cadastradas e com apelidos comuns de estabelecimento.
@@ -523,6 +918,13 @@ export function analisar(linhas, { mes, categorias = [] } = {}) {
   const itens = [];
   const descartadas = [];
 
+  // Print de app tem outra estrutura, e traduzi-la aqui em cima é o que deixa
+  // todo o resto desta função valer igual para os dois formatos.
+  const ehApp = pareceListaDeApp(linhas, mes);
+  const traduzido = ehApp ? normalizarListaDeApp(linhas) : { linhas, ignoradas: [] };
+  const uteis = traduzido.linhas;
+  descartadas.push(...traduzido.ignoradas);
+
   /** Monta o candidato de um trecho que já contém um único lançamento. */
   const interpretar = (trecho, id) => {
     const achadoValor = acharValor(trecho);
@@ -580,10 +982,10 @@ export function analisar(linhas, { mes, categorias = [] } = {}) {
   // vão vencer. Elas repetem compras que a fatura já cobrou e não entram neste
   // mês; como o bloco fecha o documento, o corte é daí em diante.
   const RX_FUTURAS = /(pr[óo]ximas?\s+faturas|lan[çc]amentos?\s+futuros)/i;
-  const corte = linhas.findIndex((l) => RX_FUTURAS.test(l));
-  const atuais = corte >= 0 ? linhas.slice(0, corte) : linhas;
+  const corte = uteis.findIndex((l) => RX_FUTURAS.test(l));
+  const atuais = corte >= 0 ? uteis.slice(0, corte) : uteis;
   if (corte >= 0) {
-    linhas.slice(corte).forEach((l, i) => descartadas.push({
+    uteis.slice(corte).forEach((l, i) => descartadas.push({
       linha: corte + i + 1, texto: l.trim(), motivo: 'parcela de fatura futura',
     }));
   }
@@ -646,5 +1048,13 @@ export function analisar(linhas, { mes, categorias = [] } = {}) {
     vistos.add(chave);
   }
 
-  return { itens, descartadas, total_fatura: acharTotalDaFatura(linhas) };
+  return {
+    itens,
+    descartadas,
+    formato: ehApp ? 'lista' : 'fatura',
+    // O print mostra um pedaço da lista, e o número grande da aba de mês é o
+    // total da fatura inteira. Declará-lo faria a tela de revisão acusar uma
+    // diferença enorme que não é erro nenhum — é só o resto da fatura.
+    total_fatura: ehApp ? null : acharTotalDaFatura(linhas),
+  };
 }

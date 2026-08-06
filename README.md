@@ -59,13 +59,38 @@ Cobrança recorrente no cartão (Spotify, academia) **não tem cadastro próprio
 ela é um gasto que se repete, então entra como lançamento do mês, e a fatura
 seguinte a traz de novo. Fora do cartão, é uma conta.
 
+### Parcelado é um tipo de gasto, não outra tela
+
+Quem lança não pensa "vou cadastrar um parcelamento" — pensa "comprei isso, e
+foi em 10x". Por isso existe **um formulário só**: em *Gastos do mês*, o botão
+**+ Novo gasto** abre a mesma tela para os dois casos, e o seletor no topo troca
+entre **à vista** e **parcelado**.
+
+Escolhido "parcelado", aparece o bloco reservado às parcelas — número de
+parcelas e mês da primeira, com o total da compra e o mês da última calculados
+ali mesmo. O valor passa a ser o da parcela, o mês da fatura sai (quem manda é o
+mês da 1ª parcela) e "pago com" fica só nos cartões, porque parcela em Pix ou
+dinheiro não existe. Em "à vista" esse bloco some inteiro.
+
+Na listagem, a parcela do mês tem as mesmas ações da compra inteira: **editar**
+(mexe em todas as parcelas), **quitar neste mês** (a parcela deste mês vira a
+última) e **excluir** (some de todos os meses). As compras que não têm parcela no
+mês aberto — as que só começam depois e as que já terminaram — ficam no bloco
+recolhido no fim da lista, para continuarem alcançáveis.
+
 ## Telas
 
-- **Painel do mês** — saldo, composição da dívida, categorias, maiores gastos
+- **Painel do mês** — abre com a faixa de meses: cada mês é um cartão com o
+  total que sai nele, e a linha por cima liga os totais. Do mês corrente em
+  diante ela vira tracejada, porque ali não há fatura fechada — é projeção do
+  que já está comprometido. Tocar num mês leva o painel inteiro para ele, e o
+  trilho pode ser arrastado com o mouse: solto em movimento, ele desliza até
+  parar e escolhe o mês que ficou no centro. Vale para o trilho de cartões da
+  tela de gastos também.
+  Embaixo, saldo, composição da dívida, categorias e maiores gastos
 - **Projeção** — os próximos meses com o que já está comprometido
 - **Gastos do mês** — navegação por cartão: escolhe o cartão, vê o plástico com a
-  fatura dele e os gastos embaixo; é onde se lança compra avulsa
-- **Parcelamentos** — andamento de cada compra e quanto ainda falta
+  fatura dele e os gastos embaixo; é onde se lança gasto, à vista ou parcelado
 - **Contas e débitos** — o que é pago fora do cartão
 - **Receitas** — salário, extras e ajustes (aceita valor negativo)
 - **Cartões** — cadastro com cartão visual (bandeira e 4 últimos dígitos), limite, fechamento/vencimento e encargos do mês
@@ -77,7 +102,8 @@ seguinte a traz de novo. Fora do cartão, é uma conta.
 Na tela **Importar gastos**, o primeiro bloco aceita a fatura direto:
 
 1. Escolha o cartão e o mês da fatura.
-2. Arraste o arquivo — PDF ou foto/print (PNG, JPG, WEBP), até 15 MB.
+2. Arraste o arquivo — PDF, foto da fatura ou print da lista do app do banco
+   (PNG, JPG, WEBP), até 15 MB.
 3. **Marque o que deve ser lido — no próprio PDF.** Circule os lançamentos num
    editor de PDF antes de enviar. O app acha o traço sozinho e lê só o que está
    dentro dele: cabeçalho, totais e rodapé ficam de fora, e é isso que elimina a
@@ -86,8 +112,19 @@ Na tela **Importar gastos**, o primeiro bloco aceita a fatura direto:
    Serve **qualquer cor viva** — vermelho, verde, azul, rosa — e cores diferentes
    podem conviver no mesmo arquivo. Vale marcar várias áreas, em várias páginas.
    Sem marcação, o arquivo inteiro é lido.
-4. Confira a tabela: descrição, valor, categoria e tipo são editáveis ali mesmo.
-5. Confirme.
+4. Confira a tabela: **data**, descrição, valor, categoria e tipo são editáveis
+   ali mesmo. Quando o arquivo não entrega a data de um lançamento, ele chega
+   com o campo em branco — nunca com uma data chutada — e a tela avisa quantos
+   estão assim. A data é opcional: sem ela o gasto entra no mês da fatura do
+   mesmo jeito.
+5. Faltou alguma compra? **+ Adicionar linha** cria uma linha em branco no fim
+   da tabela, que é preenchida e gravada junto com o resto. Serve para o que o
+   leitor não achou e para o que ficou fora do enquadramento do print — evita
+   ter que voltar depois pela tela de gastos. Só essa linha tem o **×** que a
+   remove; as que vieram do arquivo se desmarcam, e assim continuam à vista
+   para conferência. Marcada e sem descrição ou sem valor, ela trava a
+   importação em vez de sumir na gravação.
+6. Confirme.
 
 Sem nenhuma marcação vale a heurística, que tenta descartar totais e rodapés
 sozinha. A marcação existe justamente para quando essa adivinhação erra.
@@ -126,6 +163,68 @@ O que o leitor faz sozinho:
 Cada item pode virar compra avulsa ou parcelamento, escolhendo na própria tabela
 de revisão. Quando a fatura declara o próprio total, a tela compara com o que foi
 lido e avisa se falta ou sobra dinheiro.
+
+### Print da lista do app do banco
+
+O mesmo campo aceita um **print da tela de lançamentos do app**, que não tem a
+estrutura de uma fatura: lá a data é um **cabeçalho de dia** ("2 de agosto",
+"Domingo, 2 de ago") que vale para tudo que vem abaixo, e o nome do
+estabelecimento **quebra em duas ou três linhas**.
+
+Cada app desenha essa lista de um jeito, e a diferença não é cosmética — ela
+decide se um trecho solto pertence à compra de cima ou à de baixo:
+
+```
+Itaú    NOME DA LOJA          R$ 45,90     valor à direita do nome
+        Cartão físico                      legenda fecha a compra
+
+Inter   Restaurantes                       categoria
+        -R$ 21,00                          valor sozinho na linha
+        FRUTAH SIMPLESMENT SAO             nome, embaixo do valor
+```
+
+O leitor distingue os dois pela própria linha do valor: se ela carrega texto de
+verdade, o nome está nela; se vem só com o valor, o nome está nas linhas
+vizinhas. Daí traduz para o formato de fatura — cada compra vira uma linha
+"dd/mm descrição valor" — e daí para frente vale tudo que já está descrito
+acima: ruído, parcela, categoria, duplicata. Nesse formato ele ainda:
+
+- **descarta a moldura do app**: o relógio, o nome do cartão, a faixa de abas de
+  mês e os botões do rodapé ("Parcelar fatura", "Pagar"). Sem esse corte, o
+  total que aparece na aba do mês entraria como se fosse uma compra, e o botão
+  viraria parte do nome da última. O que separa a faixa de abas de uma compra é
+  a quantidade de valores na linha: a faixa traz o total de vários meses de uma
+  vez, e compra tem um valor só;
+- **aceita compra sem data**. Num print que começa com a lista já rolada, as
+  primeiras compras ficam acima do primeiro cabeçalho de dia e não há data para
+  elas: entram com o campo em branco, para ser preenchido na revisão, em vez de
+  serem descartadas ou herdarem a data errada;
+- **inverte o sinal quando o app escreve despesa com menos** (`-R$ 78,98` para
+  uma compra comum). O conserto é inverter todos, e não apagar o menos: numa
+  lista com um estorno no meio, apagar deixaria a compra certa e o estorno
+  errado. O que denuncia a inversão é a maioria dos valores ser negativa — uma
+  fatura tem compra atrás de compra e crédito de vez em quando;
+- **junta o nome quebrado ao seu valor**, tanto faz se o valor saiu alinhado com a
+  primeira linha do nome ou com a última;
+- **refaz as linhas pela posição das palavras** quando o reconhecimento enxerga a
+  tela como duas colunas e devolve os nomes todos primeiro e os valores depois.
+  Entre as duas leituras vence a que reconhece mais lançamentos, então foto de
+  fatura impressa continua saindo pelo caminho de antes;
+- **nunca funde duas compras numa só.** Se o reconhecimento estragar um valor, a
+  compra correspondente sai como linha **ignorada**, com o motivo escrito. A
+  alternativa — colá-la na compra de cima — apagaria um gasto sem avisar, e é
+  justamente o que não pode acontecer numa importação. Quem delimita uma compra
+  da outra é a legenda de baixo ("Cartão físico"). Pela mesma razão, o ponto é
+  aceito como separador decimal aqui: `R$ 60.00` é a vírgula lida errado;
+- **não declara total**: o print mostra um pedaço do mês, e comparar a soma com o
+  total da fatura acusaria uma diferença que não é erro.
+
+Um print cobre alguns dias; para o mês inteiro, envie os prints em sequência. O
+que já foi importado volta marcado como **"já existe"** e desmarcado, então
+sobreposição entre um print e o seguinte não vira lançamento em dobro.
+
+A leitura de PDF não mudou: os dois formatos convivem, e a tela de revisão diz
+qual dos dois foi reconhecido.
 
 **PDF escaneado** (sem texto selecionável) não é lido como PDF — o sistema avisa
 e pede que você envie como imagem, aí o reconhecimento de texto entra. O OCR roda

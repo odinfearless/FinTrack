@@ -13,3 +13,6 @@ Thumbs.db
 
 # arquivos temporários do Excel
 ~$*.xlsx
+
+# pacote de idioma que o reconhecimento de texto baixa na primeira leitura
+*.traineddata

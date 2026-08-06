@@ -47,6 +47,20 @@ export function somarMeses(mes, n) {
   return `${String(Math.floor(total / 12)).padStart(4, '0')}-${String((total % 12) + 1).padStart(2, '0')}`;
 }
 
+/**
+ * Situação de uma compra parcelada em relação ao mês que está sendo olhado:
+ * `futuro` (a primeira parcela ainda vem), `ativo` (cai neste mês) ou `quitado`
+ * (a última parcela já passou). `parcela` é o número da parcela do mês.
+ */
+export function situacaoParcelamento(p, mes) {
+  const [a1, m1] = p.mes_inicio.split('-').map(Number);
+  const [a2, m2] = mes.split('-').map(Number);
+  const indice = (a2 * 12 + m2) - (a1 * 12 + m1);
+  if (indice < 0) return { estado: 'futuro', parcela: 0 };
+  if (indice >= p.parcelas) return { estado: 'quitado', parcela: p.parcelas };
+  return { estado: 'ativo', parcela: indice + 1 };
+}
+
 /** Texto da vigência de um item recorrente, como aparece nas listagens. */
 export function vigencia(inicio, fim) {
   if (!fim) return `desde ${rotuloMes(inicio, { curto: true })}`;

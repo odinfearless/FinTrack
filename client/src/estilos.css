@@ -440,6 +440,15 @@ summary:hover { color: var(--text); }
   -webkit-overflow-scrolling: touch;
 }
 .carrossel::-webkit-scrollbar { display: none; }
+
+/* O trilho é arrastável com o ponteiro — no desktop, sem isso só sobraria a
+   roda, que num trilho horizontal é o gesto errado. */
+.carrossel, .faixa { cursor: grab; }
+.carrossel.arrastando, .faixa.arrastando { cursor: grabbing; }
+.carrossel.arrastando .carrossel-item, .faixa.arrastando .faixa-mes { cursor: grabbing; }
+/* Enquanto arrasta, o recuo dos não escolhidos atrapalharia: o trilho inteiro
+   está em movimento, e a opacidade piscando item a item embaralha a leitura. */
+.carrossel.arrastando .carrossel-item { opacity: 1; }
 /* Sem `scroll-behavior: smooth` de propósito: com ele, motores que não animam
    simplesmente ignoram a rolagem programática e o slide ativo nunca chega ao
    centro. O gesto do usuário já é animado pelo próprio scroll-snap. */
@@ -484,6 +493,72 @@ summary:hover { color: var(--text); }
 .carrossel-total { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
 .carrossel-qtd { font-size: 12px; color: var(--muted); }
 
+/* ------------------------- faixa de meses do painel ----------------------- */
+.faixa {
+  /* Precisa bater com o LARGURA de FaixaDeMeses.jsx. */
+  --mes: 120px;
+
+  display: flex;
+  overflow-x: auto;
+  /* O snap é o que faz a rolagem parar sempre num mês inteiro. */
+  scroll-snap-type: x mandatory;
+  /* O respiro lateral é o que permite centralizar o primeiro e o último mês:
+     sem ele não há rolagem sobrando nas pontas e eles ficariam encostados na
+     borda enquanto os do meio centralizam.
+     Aqui não há teto, ao contrário do carrossel de cartões: o mês corrente vive
+     na ponta direita da faixa, então é justamente ele que ficaria fora do
+     centro se a folga fosse limitada. */
+  padding: 0 calc(50% - var(--mes) / 2) 2px;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.faixa::-webkit-scrollbar { display: none; }
+
+/* Precisa bater com LARGURA/ESPACO/ALTURA de FaixaDeMeses.jsx: a linha é
+   desenhada em coordenadas calculadas lá. */
+.faixa-trilho { position: relative; display: flex; gap: 10px; flex: 0 0 auto; }
+
+/* Por cima dos cartões, e sem receber clique: quem responde ao toque é o botão
+   do mês que está embaixo dela. */
+.faixa-linha { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+
+.faixa-mes {
+  flex: 0 0 auto;
+  scroll-snap-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  /* O meio fica livre de propósito: é por onde a linha passa. */
+  padding: 12px 8px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: var(--surface-2);
+  font: inherit;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+.faixa-mes:hover { background: color-mix(in srgb, var(--s1) 8%, var(--surface-2)); }
+/* Mês ainda não fechado: o cartão recua junto com a linha tracejada, para a
+   projeção não se passar por fatura fechada. Vem antes de `.ativo` porque as
+   duas classes convivem — o mês escolhido pode ser um mês projetado, e aí quem
+   tem de vencer é o destaque da escolha. */
+.faixa-mes.projetado { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+.faixa-mes.ativo {
+  background: color-mix(in srgb, var(--s1) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--s1) 55%, transparent);
+  color: var(--text);
+}
+.faixa-mes:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .faixa-mes { transition: none; } }
+
+.faixa-mes-nome { font-size: 13px; font-weight: 600; }
+.faixa-mes-valor { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+.faixa-mes.ativo .faixa-mes-valor { color: var(--s1); }
+.faixa-mes.projetado .faixa-mes-valor { font-weight: 500; color: var(--muted); }
+.faixa-mes.ativo.projetado .faixa-mes-valor { color: var(--s1); }
+
 .gastos-busca {
   display: flex;
   flex-wrap: wrap;
@@ -492,6 +567,33 @@ summary:hover { color: var(--text); }
 }
 .gastos-busca input { flex: 3 1 240px; }
 .gastos-busca select { flex: 1 1 180px; }
+
+/* Seletor "à vista / parcelado" do formulário de gasto. Reaproveita os chips da
+   listagem; o que muda é só a margem, que aqui já vem do grid do modal. */
+.seletor-tipo { margin-bottom: 0; }
+.seletor-tipo .chip.ativo.parcelado {
+  background: color-mix(in srgb, var(--s2) 20%, transparent);
+  border-color: color-mix(in srgb, var(--s2) 50%, transparent);
+}
+
+/* Bloco reservado aos campos que só existem em compra parcelada. A faixa à
+   esquerda é o que diz, sem texto, que aquele pedaço do formulário pertence a
+   outro tipo de lançamento — e por isso aparece e some inteiro. */
+.bloco-parcelado {
+  display: grid;
+  gap: 14px;
+  padding: 13px 15px;
+  border-left: 3px solid color-mix(in srgb, var(--s2) 55%, transparent);
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--s2) 7%, transparent);
+}
+.bloco-parcelado .aviso { background: transparent; }
+
+/* Compras parceladas que não caem no mês visível — fechado por padrão, porque é
+   consulta, não a lista do mês. */
+.fora-do-mes { border-top: none; padding-top: 0; margin-top: 18px; }
+.fora-do-mes > summary { font-size: 13.5px; font-weight: 600; color: var(--text-2); }
+.fora-do-mes[open] > summary { margin-bottom: 12px; }
 
 /* Ganha colunas sozinha quando há largura — nenhuma media query envolvida. */
 .lista-despesas {

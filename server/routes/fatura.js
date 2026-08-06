@@ -59,7 +59,7 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
     );
 
     const categorias = db.prepare('SELECT id, nome FROM categorias').all();
-    const { itens, descartadas, total_fatura: totalFatura } = analisar(linhas, { mes, categorias });
+    const { itens, descartadas, formato, total_fatura: totalFatura } = analisar(linhas, { mes, categorias });
 
     return res.json({
       arquivo: req.file.originalname,
@@ -72,6 +72,10 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
       regioes_usadas: usadas?.length || 0,
       regioes: usadas || [],
       linhas_lidas: linhas.length,
+      // 'fatura' (uma linha por lançamento) ou 'lista' (extrato de app, com
+      // cabeçalho de dia). A tela diz qual foi para o usuário saber por que a
+      // leitura saiu como saiu.
+      formato,
       total_fatura: totalFatura,
       itens: marcarDuplicatas(itens, mes, cartaoId),
       descartadas: descartadas.slice(0, 40),
