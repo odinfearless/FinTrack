@@ -79,6 +79,7 @@ const FOLGA_DE_CLIQUE = 5;
  * escutador de rolagem escolhe quem ficou no centro.
  */
 function arrastoComInercia(el) {
+  let pressionado = false;
   let arrastando = false;
   let partidaX = 0;
   let partidaScroll = 0;
@@ -93,11 +94,26 @@ function arrastoComInercia(el) {
   const aoPressionar = (e) => {
     if (e.pointerType === 'touch' || e.button !== 0) return;
     parar();
-    arrastando = true;
+    pressionado = true;
+    arrastando = false;
     percorrido = 0;
     partidaX = e.clientX;
     partidaScroll = el.scrollLeft;
     amostras = [{ t: performance.now(), x: e.clientX }];
+  };
+
+  /**
+   * O arrasto só começa de verdade depois da folga de clique — e é aí que o
+   * ponteiro é capturado.
+   *
+   * Capturar já no `pointerdown` custava caro: com a captura ativa o `click`
+   * passa a ser entregue ao trilho, e não ao item embaixo do cursor. O trilho
+   * ficava arrastável e, em troca, nenhum cartão podia mais ser escolhido no
+   * clique — que é o gesto principal quando tudo cabe na tela e não há o que
+   * arrastar.
+   */
+  const comecarArrasto = (e) => {
+    arrastando = true;
     snapOriginal = el.style.scrollSnapType;
     el.style.scrollSnapType = 'none';
     el.style.userSelect = 'none';
@@ -108,17 +124,26 @@ function arrastoComInercia(el) {
   };
 
   const aoMover = (e) => {
-    if (!arrastando) return;
+    if (!pressionado) return;
     const dx = e.clientX - partidaX;
     percorrido = Math.max(percorrido, Math.abs(dx));
+    if (!arrastando) {
+      if (percorrido <= FOLGA_DE_CLIQUE) return;
+      comecarArrasto(e);
+    }
     el.scrollLeft = partidaScroll - dx;
     amostras.push({ t: performance.now(), x: e.clientX });
     if (amostras.length > 6) amostras.shift();
   };
 
   const aoSoltar = (e) => {
-    if (!arrastando) return;
+    const houveArrasto = arrastando;
+    pressionado = false;
     arrastando = false;
+    // Solto sem ter passado da folga, o gesto foi um clique: nada a desfazer, e
+    // o clique segue seu caminho até o item.
+    if (!houveArrasto) return;
+
     try { el.releasePointerCapture(e.pointerId); } catch { /* já solto */ }
     el.style.userSelect = '';
     el.classList.remove('arrastando');
