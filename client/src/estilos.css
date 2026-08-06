@@ -493,6 +493,33 @@ summary:hover { color: var(--text); }
 .gastos-busca input { flex: 3 1 240px; }
 .gastos-busca select { flex: 1 1 180px; }
 
+/* Seletor "à vista / parcelado" do formulário de gasto. Reaproveita os chips da
+   listagem; o que muda é só a margem, que aqui já vem do grid do modal. */
+.seletor-tipo { margin-bottom: 0; }
+.seletor-tipo .chip.ativo.parcelado {
+  background: color-mix(in srgb, var(--s2) 20%, transparent);
+  border-color: color-mix(in srgb, var(--s2) 50%, transparent);
+}
+
+/* Bloco reservado aos campos que só existem em compra parcelada. A faixa à
+   esquerda é o que diz, sem texto, que aquele pedaço do formulário pertence a
+   outro tipo de lançamento — e por isso aparece e some inteiro. */
+.bloco-parcelado {
+  display: grid;
+  gap: 14px;
+  padding: 13px 15px;
+  border-left: 3px solid color-mix(in srgb, var(--s2) 55%, transparent);
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--s2) 7%, transparent);
+}
+.bloco-parcelado .aviso { background: transparent; }
+
+/* Compras parceladas que não caem no mês visível — fechado por padrão, porque é
+   consulta, não a lista do mês. */
+.fora-do-mes { border-top: none; padding-top: 0; margin-top: 18px; }
+.fora-do-mes > summary { font-size: 13.5px; font-weight: 600; color: var(--text-2); }
+.fora-do-mes[open] > summary { margin-bottom: 12px; }
+
 /* Ganha colunas sozinha quando há largura — nenhuma media query envolvida. */
 .lista-despesas {
   list-style: none;

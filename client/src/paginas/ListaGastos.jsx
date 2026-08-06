@@ -1,4 +1,4 @@
-import { brl, dataBR, rotuloDia } from '../formato.js';
+import { brl, dataBR, rotuloDia, rotuloMes, somarMeses } from '../formato.js';
 import { corDeMarca } from '../CartaoVisual.jsx';
 import CarrosselOrigens from '../CarrosselOrigens.jsx';
 import { Medidor, MenuAcoes, useEhMobile, Valor, Vazio } from '../componentes.jsx';
@@ -64,7 +64,7 @@ function montarSlides({ resumo, cartoes, formasSemCartao }) {
  */
 export default function ListaGastos({
   itens, mes, cartoes, categorias, resumo,
-  filtros, setFiltros, aoEditar, aoExcluir,
+  filtros, setFiltros, foraDoMes = [], aoEditar, aoExcluir, aoQuitar,
 }) {
   const ehMobile = useEhMobile();
   const selecionado = cartoes.find((c) => String(c.id) === String(filtros.cartao)) || null;
@@ -140,6 +140,7 @@ export default function ListaGastos({
             mostrarForma={semCartaoSelecionado}
             aoEditar={aoEditar}
             aoExcluir={aoExcluir}
+            aoQuitar={aoQuitar}
           />
         ) : (
           <TabelaDeGastos
@@ -148,9 +149,105 @@ export default function ListaGastos({
             mostrarForma={semCartaoSelecionado}
             aoEditar={aoEditar}
             aoExcluir={aoExcluir}
+            aoQuitar={aoQuitar}
           />
         ))}
+
+      <ParceladasForaDoMes
+        itens={foraDoMes}
+        mes={mes}
+        filtros={filtros}
+        aoEditar={aoEditar}
+        aoExcluir={aoExcluir}
+      />
     </>
+  );
+}
+
+/**
+ * Espaço reservado às compras parceladas que não têm parcela no mês visível: as
+ * que só começam depois e as que já terminaram.
+ *
+ * Existe porque a lista acima é do mês — sem ele, uma compra cadastrada para
+ * começar em três meses sumiria da tela logo depois de salva, e uma já quitada
+ * não teria mais como ser corrigida. Some inteiro quando não há nenhuma, e
+ * também quando a listagem está filtrada só nos gastos avulsos.
+ *
+ * Os filtros da tela valem aqui também: procurar por uma compra e não achá-la
+ * porque ela terminou no mês passado seria justamente o que este bloco existe
+ * para evitar.
+ */
+function ParceladasForaDoMes({ itens, mes, filtros, aoEditar, aoExcluir }) {
+  const termo = filtros.q.trim().toLowerCase();
+
+  const visiveis = filtros.cartao === 'sem' ? [] : itens.filter((p) => {
+    if (filtros.cartao && String(p.cartao_id) !== String(filtros.cartao)) return false;
+    if (filtros.categoria === 'sem' && p.categoria_id) return false;
+    if (filtros.categoria && filtros.categoria !== 'sem'
+      && String(p.categoria_id) !== String(filtros.categoria)) return false;
+    if (termo && !`${p.descricao} ${p.categoria || ''} ${p.pessoa || ''}`.toLowerCase().includes(termo)) {
+      return false;
+    }
+    return true;
+  });
+
+  if (filtros.origem === 'avulso' || visiveis.length === 0) return null;
+
+  return (
+    <details className="cartao fora-do-mes">
+      <summary>
+        Compras parceladas fora de {rotuloMes(mes)}
+        <span className="fraco"> · {visiveis.length}</span>
+      </summary>
+
+      <div className="rolagem">
+        <table>
+          <thead>
+            <tr>
+              <th>Compra</th>
+              <th>Cartão</th>
+              <th className="num">Parcela</th>
+              <th>Período</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {visiveis.map((p) => (
+              <tr key={p.id}>
+                <td>
+                  {p.descricao}
+                  <span className="etiqueta" style={{ marginLeft: 8 }}>
+                    {p.estado === 'quitado' ? 'quitada' : 'começa depois'}
+                  </span>
+                </td>
+                <td>
+                  <span className="etiqueta">
+                    <i className="ponto" style={{ background: corDeMarca(p.cartao_cor) }} />{p.cartao}
+                  </span>
+                </td>
+                <td className="num">
+                  <Valor v={p.valor_parcela} />
+                  <span className="fraco"> × {p.parcelas}</span>
+                </td>
+                <td className="fraco" style={{ whiteSpace: 'nowrap' }}>
+                  {rotuloMes(p.mes_inicio, { curto: true })} →{' '}
+                  {rotuloMes(somarMeses(p.mes_inicio, p.parcelas - 1), { curto: true })}
+                </td>
+                <td>
+                  <div className="acoes">
+                    <MenuAcoes itens={[
+                      { texto: 'Editar', aoClicar: () => aoEditar(p) },
+                      { texto: 'Excluir', perigo: true, aoClicar: () => aoExcluir(p) },
+                    ]}
+                    />
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
   );
 }
 
@@ -240,8 +337,27 @@ function Tipo({ d, semEtiqueta = false }) {
   );
 }
 
-function acoesDe(d, aoEditar, aoExcluir) {
-  if (d.origem !== 'avulso') return null;
+/**
+ * Ações da linha. A parcela abre a compra inteira: editar mexe em todas as
+ * parcelas de uma vez, quitar encurta a compra aqui e excluir apaga o
+ * parcelamento de todos os meses — por isso o texto de cada uma é diferente do
+ * gasto avulso, mesmo o menu sendo o mesmo.
+ */
+function acoesDe(d, aoEditar, aoExcluir, aoQuitar) {
+  if (d.origem === 'parcelamento') {
+    return (
+      <MenuAcoes itens={[
+        aoQuitar && d.parcelas_restantes > 0 && {
+          texto: 'Quitar neste mês',
+          aoClicar: () => aoQuitar(d),
+        },
+        { texto: 'Editar compra', aoClicar: () => aoEditar(d) },
+        { texto: 'Excluir compra', perigo: true, aoClicar: () => aoExcluir(d) },
+      ]}
+      />
+    );
+  }
+
   return (
     <MenuAcoes itens={[
       { texto: 'Editar', aoClicar: () => aoEditar(d) },
@@ -256,7 +372,7 @@ function acoesDe(d, aoEditar, aoExcluir) {
  * Aqui a data continua sendo uma coluna: com todas as linhas visíveis lado a
  * lado, cabeçalhos de dia só quebrariam a leitura vertical.
  */
-function TabelaDeGastos({ itens, origemFixada, mostrarForma, aoEditar, aoExcluir }) {
+function TabelaDeGastos({ itens, origemFixada, mostrarForma, aoEditar, aoExcluir, aoQuitar }) {
   return (
     <div className="cartao">
       <div className="rolagem">
@@ -287,7 +403,7 @@ function TabelaDeGastos({ itens, origemFixada, mostrarForma, aoEditar, aoExcluir
                 <td>{d.pessoa || <span className="fraco">—</span>}</td>
                 <td className="fraco">{dataBR(d.data)}</td>
                 <td className="num"><Valor v={d.valor} /></td>
-                <td><div className="acoes">{acoesDe(d, aoEditar, aoExcluir)}</div></td>
+                <td><div className="acoes">{acoesDe(d, aoEditar, aoExcluir, aoQuitar)}</div></td>
               </tr>
             ))}
           </tbody>
@@ -304,7 +420,7 @@ function TabelaDeGastos({ itens, origemFixada, mostrarForma, aoEditar, aoExcluir
  * ocupava uma linha de metadados que numa tela estreita é cara, e ainda deixava
  * a mesma informação escrita várias vezes seguidas.
  */
-function CartoesDeGasto({ itens, mes, origemFixada, mostrarForma, aoEditar, aoExcluir }) {
+function CartoesDeGasto({ itens, mes, origemFixada, mostrarForma, aoEditar, aoExcluir, aoQuitar }) {
   return (
     <div className="grupos-dia">
       {agruparPorDia(itens).map((grupo) => (
@@ -316,7 +432,7 @@ function CartoesDeGasto({ itens, mes, origemFixada, mostrarForma, aoEditar, aoEx
                 <div className="item-topo">
                   <span className="item-descricao">{d.descricao}</span>
                   <span className="item-valor"><Valor v={d.valor} /></span>
-                  {acoesDe(d, aoEditar, aoExcluir)}
+                  {acoesDe(d, aoEditar, aoExcluir, aoQuitar)}
                 </div>
 
                 <div className="item-meta">

@@ -6,7 +6,6 @@ import { ProvedorAviso } from './componentes.jsx';
 
 import Painel from './paginas/Painel.jsx';
 import Despesas from './paginas/Despesas.jsx';
-import Parcelamentos from './paginas/Parcelamentos.jsx';
 import Receitas from './paginas/Receitas.jsx';
 import Contas from './paginas/Contas.jsx';
 import Cartoes from './paginas/Cartoes.jsx';
@@ -60,7 +59,6 @@ const MENU = [
     titulo: 'Lançamentos',
     itens: [
       { para: '/despesas', ic: '≡', texto: 'Gastos do mês' },
-      { para: '/parcelamentos', ic: '⧉', texto: 'Parcelamentos' },
       { para: '/contas', ic: '⌂', texto: 'Contas e débitos' },
       { para: '/receitas', ic: '↓', texto: 'Receitas' },
     ],
@@ -168,7 +166,6 @@ const TITULOS = {
   '/painel': 'Painel do mês',
   '/projecao': 'Projeção dos próximos meses',
   '/despesas': 'Gastos do mês',
-  '/parcelamentos': 'Parcelamentos',
   '/contas': 'Contas e débitos',
   '/receitas': 'Receitas',
   '/cartoes': 'Cartões',
@@ -226,7 +223,9 @@ export default function App() {
                 <Route path="/painel" element={<Painel />} />
                 <Route path="/projecao" element={<Projecao />} />
                 <Route path="/despesas" element={<Despesas />} />
-                <Route path="/parcelamentos" element={<Parcelamentos />} />
+                {/* Parcelamento virou um tipo de gasto: quem tiver o link antigo
+                    cai na tela onde ele agora é cadastrado e editado. */}
+                <Route path="/parcelamentos" element={<Navigate to="/despesas" replace />} />
                 <Route path="/contas" element={<Contas />} />
                 <Route path="/receitas" element={<Receitas />} />
                 <Route path="/cartoes" element={<Cartoes />} />
