@@ -80,7 +80,11 @@ recolhido no fim da lista, para continuarem alcançáveis.
 
 ## Telas
 
-- **Painel do mês** — saldo, composição da dívida, categorias, maiores gastos
+- **Painel do mês** — abre com a faixa de meses: cada mês é um cartão com o
+  total que sai nele, e a linha por cima liga os totais. Do mês corrente em
+  diante ela vira tracejada, porque ali não há fatura fechada — é projeção do
+  que já está comprometido. Tocar num mês leva o painel inteiro para ele.
+  Embaixo, saldo, composição da dívida, categorias e maiores gastos
 - **Projeção** — os próximos meses com o que já está comprometido
 - **Gastos do mês** — navegação por cartão: escolhe o cartão, vê o plástico com a
   fatura dele e os gastos embaixo; é onde se lança gasto, à vista ou parcelado

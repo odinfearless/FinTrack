@@ -484,6 +484,60 @@ summary:hover { color: var(--text); }
 .carrossel-total { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
 .carrossel-qtd { font-size: 12px; color: var(--muted); }
 
+/* ------------------------- faixa de meses do painel ----------------------- */
+.faixa {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 2px;
+}
+.faixa::-webkit-scrollbar { display: none; }
+
+/* Precisa bater com LARGURA/ESPACO/ALTURA de FaixaDeMeses.jsx: a linha é
+   desenhada em coordenadas calculadas lá. */
+.faixa-trilho { position: relative; display: flex; gap: 10px; flex: 0 0 auto; }
+
+/* Por cima dos cartões, e sem receber clique: quem responde ao toque é o botão
+   do mês que está embaixo dela. */
+.faixa-linha { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+
+.faixa-mes {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  /* O meio fica livre de propósito: é por onde a linha passa. */
+  padding: 12px 8px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: var(--surface-2);
+  font: inherit;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+.faixa-mes:hover { background: color-mix(in srgb, var(--s1) 8%, var(--surface-2)); }
+/* Mês ainda não fechado: o cartão recua junto com a linha tracejada, para a
+   projeção não se passar por fatura fechada. Vem antes de `.ativo` porque as
+   duas classes convivem — o mês escolhido pode ser um mês projetado, e aí quem
+   tem de vencer é o destaque da escolha. */
+.faixa-mes.projetado { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+.faixa-mes.ativo {
+  background: color-mix(in srgb, var(--s1) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--s1) 55%, transparent);
+  color: var(--text);
+}
+.faixa-mes:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .faixa-mes { transition: none; } }
+
+.faixa-mes-nome { font-size: 13px; font-weight: 600; }
+.faixa-mes-valor { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+.faixa-mes.ativo .faixa-mes-valor { color: var(--s1); }
+.faixa-mes.projetado .faixa-mes-valor { font-weight: 500; color: var(--muted); }
+.faixa-mes.ativo.projetado .faixa-mes-valor { color: var(--s1); }
+
 .gastos-busca {
   display: flex;
   flex-wrap: wrap;

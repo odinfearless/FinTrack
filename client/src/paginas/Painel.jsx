@@ -4,18 +4,33 @@ import { useMes } from '../App.jsx';
 import { brl, pct, rotuloMes } from '../formato.js';
 import { Barras, Estado, Indicador, useDados, Valor, Vazio } from '../componentes.jsx';
 import { corDeMarca } from '../CartaoVisual.jsx';
+import FaixaDeMeses from '../FaixaDeMeses.jsx';
 import { Tipo } from './ListaGastos.jsx';
 
 const arred = (n) => Math.round(n * 100) / 100;
 
 export default function Painel() {
-  const { mes } = useMes();
+  const { mes, meses, definirMes } = useMes();
   const { dados, carregando, erro } = useDados(() => api.get('/resumo', { mes }), [mes]);
 
   return (
-    <Estado carregando={carregando} erro={erro}>
-      {dados && <Conteudo r={dados} mes={mes} />}
-    </Estado>
+    <>
+      {/* Fora do `Estado` de propósito: é por ela que se troca de mês, então
+          precisa continuar de pé enquanto o painel do mês recarrega — e é a
+          saída para quem caiu num mês sem nada lançado. */}
+      <div className="cartao" style={{ marginBottom: 18 }}>
+        <div className="cartao-titulo">Quanto sai por mês</div>
+        <div className="cartao-legenda">
+          Toque num mês para ver o painel dele. Do mês corrente em diante a linha é tracejada:
+          ali não há fatura fechada, só o que já está comprometido.
+        </div>
+        <FaixaDeMeses mes={mes} meses={meses} aoEscolher={definirMes} />
+      </div>
+
+      <Estado carregando={carregando} erro={erro}>
+        {dados && <Conteudo r={dados} mes={mes} />}
+      </Estado>
+    </>
   );
 }
 
