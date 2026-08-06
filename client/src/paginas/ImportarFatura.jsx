@@ -28,6 +28,7 @@ export default function ImportarFatura({ aoImportar }) {
   const [itens, setItens] = useState([]);
   const [arrastando, setArrastando] = useState(false);
   const [verDescartadas, setVerDescartadas] = useState(false);
+  const manuais = useRef(0);
 
   const cartoes = opcoesCartao(cadastros.dados?.cartoes);
   const categorias = opcoesCategoria(cadastros.dados?.categorias);
@@ -69,10 +70,42 @@ export default function ImportarFatura({ aoImportar }) {
 
   const marcarTodos = (valor) => setItens((atuais) => atuais.map((i) => ({ ...i, selecionado: valor })));
 
+  /**
+   * Linha em branco no fim da tabela.
+   *
+   * Existe porque a leitura erra para menos: uma compra que o reconhecimento
+   * não achou, ou que ficou fora do enquadramento do print, não precisa virar
+   * uma segunda ida à tela de gastos — entra aqui, junto com o resto da fatura,
+   * e é gravada na mesma confirmação.
+   */
+  const adicionarLinha = () => {
+    manuais.current += 1;
+    setItens((atuais) => [...atuais, {
+      id: `manual-${manuais.current}`,
+      manual: true,
+      data: null,
+      descricao: '',
+      valor: '',
+      categoria_id: null,
+      tipo: 'avulso',
+      parcela_atual: null,
+      parcelas: null,
+      selecionado: true,
+    }]);
+  };
+
+  const removerLinha = (id) => setItens((atuais) => atuais.filter((i) => i.id !== id));
+
   const selecionados = itens.filter((i) => i.selecionado);
   const total = selecionados.reduce((t, i) => t + (Number(i.valor) || 0), 0);
   const duplicatas = itens.filter((i) => i.duplicata).length;
   const semData = selecionados.filter((i) => !i.data).length;
+
+  // Sem descrição ou sem valor, o servidor recusaria a linha e ela sumiria da
+  // contagem sem explicação. Melhor travar aqui, onde dá para consertá-la.
+  const incompletos = selecionados.filter(
+    (i) => !String(i.descricao || '').trim() || !Number(i.valor),
+  ).length;
 
   // Quando a fatura declara o próprio total, a diferença é o melhor sinal de
   // que alguma linha ficou para trás — ou de que entrou o que não devia.
@@ -178,6 +211,11 @@ export default function ImportarFatura({ aoImportar }) {
         <Vazio titulo="Nenhum lançamento reconhecido">
           O arquivo foi lido ({leitura.linhas_lidas} linhas), mas nenhuma linha tinha o formato
           de data, descrição e valor. Se for um PDF escaneado, envie como imagem.
+          <div style={{ marginTop: 12 }}>
+            <button type="button" className="botao pequeno" onClick={adicionarLinha}>
+              + Adicionar linha à mão
+            </button>
+          </div>
         </Vazio>
       )}
 
@@ -200,6 +238,14 @@ export default function ImportarFatura({ aoImportar }) {
               abateria a fatura em vez de somar; confira se o que está negativo aqui é mesmo
               estorno. Um print mostra só um pedaço do mês: envie os seguintes na sequência, que o
               que já foi importado volta desmarcado.
+            </div>
+          )}
+
+          {incompletos > 0 && (
+            <div className="erro" style={{ marginBottom: 14 }}>
+              <b>{incompletos} {incompletos === 1 ? 'linha marcada está' : 'linhas marcadas estão'} sem
+              descrição ou sem valor.</b> Complete ou desmarque para importar: o banco recusaria, e a
+              contagem final não bateria com o que está aqui na tela.
             </div>
           )}
 
@@ -226,6 +272,9 @@ export default function ImportarFatura({ aoImportar }) {
             </button>
             <button type="button" className="botao pequeno" onClick={() => marcarTodos(false)}>
               Desmarcar todos
+            </button>
+            <button type="button" className="botao pequeno" onClick={adicionarLinha}>
+              + Adicionar linha
             </button>
             <span style={{ flex: 1 }} />
             <span style={{ fontSize: 13.5, color: 'var(--text-2)' }}>
@@ -263,6 +312,7 @@ export default function ImportarFatura({ aoImportar }) {
                   <th>Tipo</th>
                   <th>Parcela</th>
                   <th className="num">Valor</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -294,7 +344,10 @@ export default function ImportarFatura({ aoImportar }) {
                         value={i.descricao}
                         onChange={(e) => alterar(i.id, { descricao: e.target.value })}
                         title={i.linha_original}
+                        placeholder={i.manual ? 'Descrição do gasto' : undefined}
+                        autoFocus={i.manual}
                       />
+                      {i.manual && <span className="etiqueta" style={{ marginTop: 4 }}>adicionada por você</span>}
                       {i.credito && <span className="etiqueta" style={{ marginTop: 4 }}>crédito/estorno</span>}
                       {i.duplicata && <span className="etiqueta" style={{ marginTop: 4 }}>já existe</span>}
                       {i.repetida && <span className="etiqueta" style={{ marginTop: 4 }}>linha repetida</span>}
@@ -352,6 +405,22 @@ export default function ImportarFatura({ aoImportar }) {
                         style={{ width: 108, textAlign: 'right' }}
                       />
                     </td>
+                    <td>
+                      {/* Só a linha que você criou some de vez: as que vieram do
+                          arquivo se desmarcam, e assim continuam visíveis para
+                          conferência contra o documento. */}
+                      {i.manual && (
+                        <button
+                          type="button"
+                          className="botao pequeno perigo"
+                          onClick={() => removerLinha(i.id)}
+                          title="Remover esta linha"
+                          aria-label={`Remover linha ${i.descricao || 'em branco'}`}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -373,7 +442,10 @@ export default function ImportarFatura({ aoImportar }) {
               type="button"
               className="botao primario"
               onClick={confirmar}
-              disabled={gravando || selecionados.length === 0}
+              disabled={gravando || selecionados.length === 0 || incompletos > 0}
+              title={incompletos > 0
+                ? 'Complete a descrição e o valor das linhas marcadas'
+                : undefined}
             >
               {gravando ? 'Importando…' : `Importar ${selecionados.length} lançamentos`}
             </button>

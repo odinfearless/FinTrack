@@ -110,7 +110,14 @@ Na tela **Importar gastos**, o primeiro bloco aceita a fatura direto:
    com o campo em branco — nunca com uma data chutada — e a tela avisa quantos
    estão assim. A data é opcional: sem ela o gasto entra no mês da fatura do
    mesmo jeito.
-5. Confirme.
+5. Faltou alguma compra? **+ Adicionar linha** cria uma linha em branco no fim
+   da tabela, que é preenchida e gravada junto com o resto. Serve para o que o
+   leitor não achou e para o que ficou fora do enquadramento do print — evita
+   ter que voltar depois pela tela de gastos. Só essa linha tem o **×** que a
+   remove; as que vieram do arquivo se desmarcam, e assim continuam à vista
+   para conferência. Marcada e sem descrição ou sem valor, ela trava a
+   importação em vez de sumir na gravação.
+6. Confirme.
 
 Sem nenhuma marcação vale a heurística, que tenta descartar totais e rodapés
 sozinha. A marcação existe justamente para quando essa adivinhação erra.
