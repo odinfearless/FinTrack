@@ -194,9 +194,11 @@ export default function ImportarFatura({ aoImportar }) {
           {leitura.formato === 'lista' && (
             <div className="aviso" style={{ marginBottom: 14 }}>
               <b>Lido como lista de aplicativo.</b> A data de cada compra veio do cabeçalho de dia
-              ("2 de agosto"), e as legendas de baixo ("Cartão físico") ficaram de fora. Um print
-              mostra só um pedaço do mês: envie os prints seguintes na sequência, que o que já foi
-              importado volta desmarcado.
+              ("2 de agosto", "Domingo, 2 de ago") e a moldura da tela ficou de fora. Onde o app
+              escreve toda despesa com sinal de menos, o sinal foi invertido — senão cada compra
+              abateria a fatura em vez de somar; confira se o que está negativo aqui é mesmo
+              estorno. Um print mostra só um pedaço do mês: envie os seguintes na sequência, que o
+              que já foi importado volta desmarcado.
             </div>
           )}
 

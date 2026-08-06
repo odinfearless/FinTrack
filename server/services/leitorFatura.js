@@ -548,15 +548,21 @@ function limparDescricao(bruta) {
  * — ruído, parcela, categoria, duplicata, tudo igual para os dois casos.
  */
 
-// "2 de agosto", "12 de dezembro de 2025". O ano quase nunca aparece: o app o
-// omite dentro do ano corrente, e quem o completa depois é o mês da fatura.
+// "2 de agosto", "12 de dezembro de 2025", "Domingo, 2 de ago" — o dia da
+// semana na frente é como o Inter escreve, e o mês tanto faz vir por extenso
+// como abreviado. O ano quase nunca aparece: o app o omite dentro do ano
+// corrente, e quem o completa depois é o mês da fatura.
 //
 // O espaço entre o dia e o "de" é opcional porque o reconhecimento o perde com
 // frequência — "1 de agosto" sai "1de agosto". Sem essa folga o cabeçalho deixa
 // de ser cabeçalho: a data para de avançar e o dia inteiro vai para a
 // competência errada, colado na descrição da compra seguinte. Já o espaço
 // depois do "de" continua obrigatório, senão "1demais" viraria 1º de maio.
-const RX_CABECALHO_DIA = /^(\d{1,2})\s*de\s+([a-zà-ú]{3,9})\.?(?:\s+de\s+(\d{4}))?\b/i;
+const RX_CABECALHO_DIA = new RegExp(
+  '^(?:(?:segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:[-\\s]?feira)?,?\\s+)?'
+  + '(\\d{1,2})\\s*de\\s+([a-zà-ú]{3,9})\\.?(?:\\s+de\\s+(\\d{4}))?\\b',
+  'i',
+);
 
 function lerCabecalhoDeDia(linha) {
   const m = linha.match(RX_CABECALHO_DIA);
@@ -587,6 +593,11 @@ const ehLegendaDoApp = (linha) => LEGENDAS_DO_APP.some((rx) => rx.test(linha));
 
 // "Parcela 2 de 10", "2 de 10" ou "2/10" sozinhos, embaixo do nome da compra.
 const RX_LINHA_DE_PARCELA = /^(?:parcela\s*)?\d{1,2}\s*(?:\/|\s+de\s+)\s*\d{1,2}$/i;
+
+// Botões do rodapé da tela. Merecem regra própria porque caem exatamente onde
+// o nome do estabelecimento cairia — logo abaixo do último lançamento — e sem
+// isso "Parcelar fatura" viraria parte do nome da última compra.
+const RX_BOTAO_DO_APP = /^(pagar|parcelar|antecipar|ver\s+(mais|fatura|todos))\b/i;
 
 /**
  * É um extrato de app, e não uma fatura?
@@ -626,6 +637,44 @@ const limparPedaco = (texto) => texto
 // decimal — o ponto aceito na leitura do print para aqui.
 const comVirgulaDecimal = (valor) => valor.replace(/\.(\d{2})(-?)$/, ',$1$2');
 
+/** Tem nome de gente ou de loja aqui, ou é sobra de ícone ("O", "WD", "Vi)")? */
+const temTextoUtil = (texto) => /\p{L}{3}/u.test(texto);
+
+/**
+ * De que lado do valor mora o nome do estabelecimento.
+ *
+ * Há dois desenhos de lista por aí, e a diferença não é cosmética:
+ *
+ *   Itaú   NOME DA LOJA          R$ 45,90     ← valor à direita, mesma linha
+ *   Inter  Restaurantes                       ← categoria
+ *          -R$ 21,00                          ← valor sozinho na linha
+ *          FRUTAH SIMPLESMENT SAO             ← nome, embaixo
+ *
+ * É isso que decide para onde vai um trecho solto entre duas compras: no
+ * primeiro desenho ele é o nome da compra de baixo; no segundo, o fim do nome
+ * da compra de cima. Errar o lado funde as duas.
+ *
+ * O sinal é a própria linha do valor: quando ela carrega texto de verdade, o
+ * nome está nela; quando vem só com o valor e sobra de ícone, o nome está fora.
+ */
+function nomeDepoisDoValor(linhas) {
+  const primeiro = linhas.findIndex((l) => lerCabecalhoDeDia(l.trim()));
+  const daLista = primeiro < 0 ? linhas : linhas.slice(primeiro + 1);
+
+  const comValor = daLista
+    .map((l) => ({ texto: l.trim(), valores: acharValores(l.trim(), { aceitarPonto: true }) }))
+    .filter((l) => l.valores.length > 0);
+  if (comValor.length < 2) return false;
+
+  const comNome = comValor.filter((l) => temTextoUtil(l.texto.slice(0, l.valores[0].inicio)));
+  return comNome.length * 2 < comValor.length;
+}
+
+// Quantas linhas o nome ocupa depois do valor. Duas cobrem o
+// "ESTABELECIMENTO / CIDADE BRA" desses aplicativos — o que passar disso é
+// rodapé de tela ("Parcelar fatura"), e não nome de loja.
+const MAX_LINHAS_DE_NOME = 2;
+
 /**
  * Converte as linhas de um print de app em linhas no formato da fatura.
  *
@@ -642,6 +691,7 @@ const comVirgulaDecimal = (valor) => valor.replace(/\.(\d{2})(-?)$/, ',$1$2');
  *            valor sem avisar; ela sai como linha ignorada, que o usuário vê.
  */
 function normalizarListaDeApp(linhas) {
+  const nomeDepois = nomeDepoisDoValor(linhas);
   const lancamentos = [];
   const ignoradas = [];
   let dia = null;
@@ -651,9 +701,19 @@ function normalizarListaDeApp(linhas) {
   const largar = (texto, motivo, indice) => ignoradas.push({ linha: indice + 1, texto, motivo });
   const ultimo = () => lancamentos[lancamentos.length - 1];
 
+  /** Completa o nome da compra de cima com o que veio depois do valor dela. */
+  const completarAnterior = (blocos, indice) => {
+    const alvo = ultimo();
+    const nome = alvo ? blocos.slice(0, MAX_LINHAS_DE_NOME) : [];
+    const sobra = alvo ? blocos.slice(MAX_LINHAS_DE_NOME) : blocos;
+    if (nome.length > 0) alvo.partes.push(...nome);
+    if (sobra.length > 0) largar(sobra.join(' '), 'rodapé da tela do aplicativo', indice);
+  };
+
   const despejarPendentes = ({ anexar, motivo, indice }) => {
     if (pendentes.length === 0) return;
-    if (anexar && ultimo()) ultimo().partes.push(...pendentes);
+    if (nomeDepois) completarAnterior(pendentes, indice);
+    else if (anexar && ultimo()) ultimo().partes.push(...pendentes);
     else largar(pendentes.join(' '), motivo, indice);
     pendentes = [];
   };
@@ -678,12 +738,12 @@ function normalizarListaDeApp(linhas) {
     // "R$ 11.339,84" entraria na lista como se fosse uma compra.
     if (dia === null) { largar(linha, 'topo da tela do aplicativo', indice); return; }
 
-    if (ehLegendaDoApp(linha)) {
+    if (ehLegendaDoApp(linha) || RX_BOTAO_DO_APP.test(linha)) {
       despejarPendentes({
         anexar: desdeALegenda > 0, motivo: 'compra sem valor reconhecido', indice,
       });
       desdeALegenda = 0;
-      largar(linha, 'legenda do aplicativo', indice);
+      largar(linha, ehLegendaDoApp(linha) ? 'legenda do aplicativo' : 'botão da tela', indice);
       return;
     }
 
@@ -694,34 +754,66 @@ function normalizarListaDeApp(linhas) {
       return;
     }
 
-    // Numa lista de app cada linha tem um valor só, à direita do nome. Dois ou
-    // mais valores significam que o reconhecimento juntou compras numa linha —
-    // e ler só o último, como se faz na fatura, apagaria as de cima. Aqui cada
-    // valor fecha o seu próprio lançamento, e a descrição de cada um é o texto
-    // que vem antes dele.
+    // Numa lista de app cada linha tem um valor só. Dois ou mais significam que
+    // o reconhecimento juntou compras numa linha — e ler só o último, como se
+    // faz na fatura, apagaria as de cima. Aqui cada valor fecha o seu próprio
+    // lançamento.
     const valores = acharValores(linha, { aceitarPonto: true });
     if (valores.length === 0) { pendentes.push(linha); return; }
 
+    // Onde o nome fica embaixo do valor, o que sobrou pendente é o fim do nome
+    // da compra anterior — menos a última linha, que é a categoria escrita em
+    // cima desta compra. Onde o nome fica na mesma linha do valor, tudo o que
+    // estava pendente é o começo do nome desta compra.
+    let antes = pendentes;
+    if (nomeDepois) {
+      antes = pendentes.slice(-1);
+      completarAnterior(pendentes.slice(0, -1), indice);
+    }
+    pendentes = [];
+
     let inicio = 0;
     valores.forEach((valor, ordem) => {
+      // Sobra de ícone ("O", "WD", "Vi)") não é nome de loja. Só é descartada
+      // no desenho em que o nome mora fora da linha do valor; no outro, o texto
+      // à esquerda do valor é justamente o nome.
+      const naLinha = linha.slice(inicio, valor.inicio);
       lancamentos.push({
         data: dia,
-        partes: [...(ordem === 0 ? pendentes : []), linha.slice(inicio, valor.inicio)],
+        partes: [
+          ...(ordem === 0 ? antes : []),
+          ...(nomeDepois && !temTextoUtil(naLinha) ? [] : [naLinha]),
+        ],
         valor: comVirgulaDecimal(linha.slice(valor.inicio, valor.fim).trim()),
       });
       desdeALegenda += 1;
       inicio = valor.fim;
     });
-    pendentes = [];
   });
 
   despejarPendentes({ anexar: false, motivo: 'rodapé da tela do aplicativo', indice: linhas.length });
+
+  // Alguns apps escrevem toda despesa com sinal de menos ("-R$ 78,98"): ali o
+  // menos quer dizer saída de dinheiro, e não crédito. Quando é assim, a
+  // convenção inteira está invertida em relação à fatura, e o conserto é
+  // inverter o sinal de todos — não só apagar o menos das compras. Numa lista
+  // com um estorno no meio, apagar deixaria a compra certa e o estorno errado.
+  //
+  // O que denuncia a inversão é a maioria: fatura tem uma compra atrás da outra
+  // e um crédito de vez em quando, então uma lista majoritariamente negativa só
+  // pode estar escrevendo saída com menos.
+  const negativos = lancamentos.filter((l) => l.valor.startsWith('-')).length;
+  const menosEhSaida = lancamentos.length >= 2 && negativos * 2 > lancamentos.length;
+  const comSinalDaFatura = (valor) => {
+    if (!menosEhSaida) return valor;
+    return valor.startsWith('-') ? valor.replace(/^-\s*/, '') : `-${valor}`;
+  };
 
   return {
     linhas: lancamentos.map((l) => [
       l.data,
       ...l.partes.map(limparPedaco).filter(Boolean),
-      l.valor,
+      comSinalDaFatura(l.valor),
     ].join(' ')),
     ignoradas,
   };

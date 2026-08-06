@@ -149,18 +149,37 @@ lido e avisa se falta ou sobra dinheiro.
 ### Print da lista do app do banco
 
 O mesmo campo aceita um **print da tela de lançamentos do app**, que não tem a
-estrutura de uma fatura: lá a data é um **cabeçalho de dia** ("2 de agosto") que
-vale para tudo que vem abaixo, o nome do estabelecimento **quebra em duas ou três
-linhas**, o valor fica à direita da linha em que o nome termina e embaixo de cada
-compra ainda vem uma legenda ("Cartão físico").
+estrutura de uma fatura: lá a data é um **cabeçalho de dia** ("2 de agosto",
+"Domingo, 2 de ago") que vale para tudo que vem abaixo, e o nome do
+estabelecimento **quebra em duas ou três linhas**.
 
-O leitor reconhece esse formato e o traduz para o outro — cada compra vira uma
-linha "dd/mm descrição valor" — e daí para frente vale tudo que já está descrito
+Cada app desenha essa lista de um jeito, e a diferença não é cosmética — ela
+decide se um trecho solto pertence à compra de cima ou à de baixo:
+
+```
+Itaú    NOME DA LOJA          R$ 45,90     valor à direita do nome
+        Cartão físico                      legenda fecha a compra
+
+Inter   Restaurantes                       categoria
+        -R$ 21,00                          valor sozinho na linha
+        FRUTAH SIMPLESMENT SAO             nome, embaixo do valor
+```
+
+O leitor distingue os dois pela própria linha do valor: se ela carrega texto de
+verdade, o nome está nela; se vem só com o valor, o nome está nas linhas
+vizinhas. Daí traduz para o formato de fatura — cada compra vira uma linha
+"dd/mm descrição valor" — e daí para frente vale tudo que já está descrito
 acima: ruído, parcela, categoria, duplicata. Nesse formato ele ainda:
 
 - **descarta a moldura do app**: o que vem antes do primeiro cabeçalho de dia
-  (relógio, nome do cartão, abas de mês) e os botões do rodapé. Sem esse corte, o
-  total que aparece na aba do mês entraria na lista como se fosse uma compra;
+  (relógio, nome do cartão, abas de mês) e os botões do rodapé ("Parcelar
+  fatura", "Pagar"). Sem esse corte, o total que aparece na aba do mês entraria
+  na lista como se fosse uma compra, e o botão viraria parte do nome da última;
+- **inverte o sinal quando o app escreve despesa com menos** (`-R$ 78,98` para
+  uma compra comum). O conserto é inverter todos, e não apagar o menos: numa
+  lista com um estorno no meio, apagar deixaria a compra certa e o estorno
+  errado. O que denuncia a inversão é a maioria dos valores ser negativa — uma
+  fatura tem compra atrás de compra e crédito de vez em quando;
 - **junta o nome quebrado ao seu valor**, tanto faz se o valor saiu alinhado com a
   primeira linha do nome ou com a última;
 - **refaz as linhas pela posição das palavras** quando o reconhecimento enxerga a
