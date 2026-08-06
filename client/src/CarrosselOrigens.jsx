@@ -1,59 +1,9 @@
-import { useEffect, useRef } from 'react';
 import CartaoVisual, { corDeMarca } from './CartaoVisual.jsx';
 import NotaVisual from './NotaVisual.jsx';
+import { useCarrossel } from './carrossel.js';
 import { Valor } from './componentes.jsx';
 
 const LARGURA = 232;
-const DURACAO = 460;
-
-/**
- * Desliza o trilho até `destino` com desaceleração.
- *
- * A animação é feita quadro a quadro em vez de `behavior: 'smooth'` porque há
- * motores em que aquele modo simplesmente não executa — e aí o cartão nunca
- * chegaria ao centro. Aqui só existem atribuições de `scrollLeft`, que funcionam
- * em qualquer lugar.
- *
- * Devolve a função que cancela a animação em curso.
- */
-function deslizarPara(el, destino, aoTerminar) {
-  const inicio = el.scrollLeft;
-  const delta = destino - inicio;
-
-  if (Math.abs(delta) < 1) {
-    aoTerminar();
-    return () => {};
-  }
-
-  // O encaixe do scroll-snap disputaria com a animação e produziria trepidação;
-  // ele é desligado durante o percurso e volta no fim, onde é útil de novo.
-  const snapOriginal = el.style.scrollSnapType;
-  el.style.scrollSnapType = 'none';
-
-  const comeco = performance.now();
-  let quadro;
-
-  const passo = (agora) => {
-    const t = Math.min((agora - comeco) / DURACAO, 1);
-    // Sai rápido e vai frenando até parar: é isso que dá a sensação de inércia.
-    const suavizado = 1 - (1 - t) ** 5;
-    el.scrollLeft = inicio + delta * suavizado;
-
-    if (t < 1) {
-      quadro = requestAnimationFrame(passo);
-      return;
-    }
-    el.style.scrollSnapType = snapOriginal;
-    aoTerminar();
-  };
-
-  quadro = requestAnimationFrame(passo);
-
-  return () => {
-    cancelAnimationFrame(quadro);
-    el.style.scrollSnapType = snapOriginal;
-  };
-}
 
 /** Slide de "Todos": não há plástico, então o resumo do mês faz as vezes dele. */
 function ResumoVisual({ cartoes, largura }) {
@@ -105,79 +55,9 @@ function ResumoVisual({ cartoes, largura }) {
  * rolagem sempre pare num slide inteiro.
  */
 export default function CarrosselOrigens({ slides, selecionado, aoSelecionar, cartoes }) {
-  const trilho = useRef(null);
-  const ignorarRolagem = useRef(false);
-
   // Traz o slide escolhido para o centro — inclusive quando a escolha veio de
   // fora do carrossel (o link "Ver gastos" da tela de Cartões, por exemplo).
-  useEffect(() => {
-    const el = trilho.current;
-    const alvo = el?.querySelector('[data-ativo="sim"]');
-    if (!el || !alvo) return undefined;
-
-    // Rola o trilho, e não `scrollIntoView`: aquele também rola os ancestrais e
-    // pode arrastar a página inteira junto; este mexe só no carrossel.
-    const destino = Math.max(0, alvo.offsetLeft - (el.clientWidth - alvo.offsetWidth) / 2);
-    ignorarRolagem.current = true;
-    const liberar = () => { ignorarRolagem.current = false; };
-
-    // Quem pediu menos movimento vai direto ao ponto.
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      el.scrollLeft = destino;
-      liberar();
-      return undefined;
-    }
-
-    let concluido = false;
-    const cancelar = deslizarPara(el, destino, () => { concluido = true; liberar(); });
-
-    // Rede de segurança. `requestAnimationFrame` não roda em aba de segundo
-    // plano, e sem isto a animação ficaria pela metade — o cartão nunca chegaria
-    // ao centro. Se o prazo vencer sem ela ter terminado, o destino é assumido
-    // de uma vez. A guarda evita puxar de volta quem já rolou o trilho na mão.
-    const t = setTimeout(() => {
-      if (concluido) return;
-      cancelar();
-      el.scrollLeft = destino;
-      liberar();
-    }, DURACAO + 400);
-
-    return () => { cancelar(); clearTimeout(t); };
-  }, [selecionado]);
-
-  // O efeito abaixo não pode depender de `selecionado`/`aoSelecionar`: eles mudam
-  // a cada render, o efeito seria refeito no meio do gesto e a limpeza mataria o
-  // temporizador de espera antes de ele decidir qualquer coisa.
-  const ultimo = useRef({ selecionado, aoSelecionar });
-  ultimo.current = { selecionado, aoSelecionar };
-
-  useEffect(() => {
-    const el = trilho.current;
-    if (!el) return undefined;
-
-    let tempo;
-    const aoRolar = () => {
-      clearTimeout(tempo);
-      // Espera a rolagem parar: selecionar durante o movimento trocaria o filtro
-      // várias vezes no meio de um único gesto.
-      tempo = setTimeout(() => {
-        if (ignorarRolagem.current) return;
-        const centro = el.scrollLeft + el.clientWidth / 2;
-        let melhor = null;
-        for (const item of el.children) {
-          const meio = item.offsetLeft + item.offsetWidth / 2;
-          const dist = Math.abs(meio - centro);
-          if (!melhor || dist < melhor.dist) melhor = { dist, chave: item.dataset.chave };
-        }
-        if (melhor && melhor.chave !== ultimo.current.selecionado) {
-          ultimo.current.aoSelecionar(melhor.chave);
-        }
-      }, 140);
-    };
-
-    el.addEventListener('scroll', aoRolar, { passive: true });
-    return () => { el.removeEventListener('scroll', aoRolar); clearTimeout(tempo); };
-  }, []);
+  const trilho = useCarrossel({ selecionado, aoSelecionar });
 
   return (
     <div className="carrossel" ref={trilho} role="tablist" aria-label="Origem do gasto">

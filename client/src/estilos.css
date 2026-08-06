@@ -486,11 +486,22 @@ summary:hover { color: var(--text); }
 
 /* ------------------------- faixa de meses do painel ----------------------- */
 .faixa {
+  /* Precisa bater com o LARGURA de FaixaDeMeses.jsx. */
+  --mes: 120px;
+
   display: flex;
   overflow-x: auto;
+  /* O snap é o que faz a rolagem parar sempre num mês inteiro. */
+  scroll-snap-type: x mandatory;
+  /* O respiro lateral é o que permite centralizar o primeiro e o último mês:
+     sem ele não há rolagem sobrando nas pontas e eles ficariam encostados na
+     borda enquanto os do meio centralizam.
+     Aqui não há teto, ao contrário do carrossel de cartões: o mês corrente vive
+     na ponta direita da faixa, então é justamente ele que ficaria fora do
+     centro se a folga fosse limitada. */
+  padding: 0 calc(50% - var(--mes) / 2) 2px;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
-  padding-bottom: 2px;
 }
 .faixa::-webkit-scrollbar { display: none; }
 
@@ -504,6 +515,7 @@ summary:hover { color: var(--text); }
 
 .faixa-mes {
   flex: 0 0 auto;
+  scroll-snap-align: center;
   display: flex;
   flex-direction: column;
   justify-content: space-between;

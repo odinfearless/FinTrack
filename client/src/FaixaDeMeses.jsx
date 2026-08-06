@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
 import { api } from './api.js';
+import { useCarrossel } from './carrossel.js';
 import { brl, mesAtual, rotuloMes } from './formato.js';
 import { useDados } from './componentes.jsx';
 
@@ -64,8 +64,6 @@ function caminho(pontos) {
  * Tocar num mês leva o painel inteiro para ele.
  */
 export default function FaixaDeMeses({ mes, meses, aoEscolher }) {
-  const trilho = useRef(null);
-
   // O mês escolhido pode estar fora da lista conhecida — quem chega pelas setas
   // do topo passa por meses ainda sem lançamento nenhum.
   const lista = meses.includes(mes) ? meses : [...meses, mes].sort();
@@ -77,16 +75,16 @@ export default function FaixaDeMeses({ mes, meses, aoEscolher }) {
     [primeiro, quantidade],
   );
 
-  // Traz o mês escolhido para o centro, inclusive quando a escolha vem do
-  // seletor do topo. Rola só o trilho: `scrollIntoView` arrastaria a página.
-  useEffect(() => {
-    const el = trilho.current;
-    const alvo = el?.querySelector('[data-ativo="sim"]');
-    if (!el || !alvo) return;
-    el.scrollLeft = Math.max(0, alvo.offsetLeft - (el.clientWidth - alvo.offsetWidth) / 2);
-  }, [mes, consulta.dados]);
-
   const linhas = consulta.dados?.linhas || [];
+
+  // Mesmo carrossel do trilho de cartões da tela de gastos: o mês escolhido vai
+  // para o centro com inércia, e arrastar o trilho escolhe quem parar no meio.
+  const trilho = useCarrossel({
+    selecionado: mes,
+    aoSelecionar: aoEscolher,
+    pronto: linhas.length > 0,
+  });
+
   if (linhas.length === 0) return null;
 
   const hoje = mesAtual();
@@ -163,6 +161,7 @@ export default function FaixaDeMeses({ mes, meses, aoEscolher }) {
               type="button"
               role="tab"
               aria-selected={ativo}
+              data-chave={l.mes}
               data-ativo={ativo ? 'sim' : 'nao'}
               className={`faixa-mes ${ativo ? 'ativo' : ''} ${l.mes > hoje ? 'projetado' : ''}`}
               style={{ width: LARGURA, height: ALTURA }}
