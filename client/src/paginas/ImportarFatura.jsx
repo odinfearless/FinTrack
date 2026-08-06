@@ -145,7 +145,8 @@ export default function ImportarFatura({ aoImportar }) {
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
           {arquivo
             ? `${Math.round(arquivo.size / 1024)} KB — clique para trocar`
-            : 'PDF com texto selecionável, ou foto/print da fatura (PNG, JPG). Até 15 MB.'}
+            : 'PDF com texto selecionável, foto da fatura ou print da lista do app do banco '
+              + '(PNG, JPG). Até 15 MB.'}
         </div>
         <input
           ref={entradaArquivo}
@@ -189,6 +190,15 @@ export default function ImportarFatura({ aoImportar }) {
             {leitura.origem === 'imagem' && ' (via reconhecimento de texto — vale conferir os valores com atenção)'}
             . Descrição e valor são editáveis aqui mesmo.
           </div>
+
+          {leitura.formato === 'lista' && (
+            <div className="aviso" style={{ marginBottom: 14 }}>
+              <b>Lido como lista de aplicativo.</b> A data de cada compra veio do cabeçalho de dia
+              ("2 de agosto"), e as legendas de baixo ("Cartão físico") ficaram de fora. Um print
+              mostra só um pedaço do mês: envie os prints seguintes na sequência, que o que já foi
+              importado volta desmarcado.
+            </div>
+          )}
 
           {duplicatas > 0 && (
             <div className="aviso" style={{ marginBottom: 14 }}>
