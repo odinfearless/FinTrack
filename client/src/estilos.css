@@ -440,6 +440,15 @@ summary:hover { color: var(--text); }
   -webkit-overflow-scrolling: touch;
 }
 .carrossel::-webkit-scrollbar { display: none; }
+
+/* O trilho é arrastável com o ponteiro — no desktop, sem isso só sobraria a
+   roda, que num trilho horizontal é o gesto errado. */
+.carrossel, .faixa { cursor: grab; }
+.carrossel.arrastando, .faixa.arrastando { cursor: grabbing; }
+.carrossel.arrastando .carrossel-item, .faixa.arrastando .faixa-mes { cursor: grabbing; }
+/* Enquanto arrasta, o recuo dos não escolhidos atrapalharia: o trilho inteiro
+   está em movimento, e a opacidade piscando item a item embaralha a leitura. */
+.carrossel.arrastando .carrossel-item { opacity: 1; }
 /* Sem `scroll-behavior: smooth` de propósito: com ele, motores que não animam
    simplesmente ignoram a rolagem programática e o slide ativo nunca chega ao
    centro. O gesto do usuário já é animado pelo próprio scroll-snap. */

@@ -63,12 +63,133 @@ function posicaoNoTrilho(el, item) {
   return item.getBoundingClientRect().left - el.getBoundingClientRect().left + el.scrollLeft;
 }
 
+// Abaixo disto o gesto foi um clique que tremeu, e não um arrasto: o item
+// escolhido continua sendo escolhido.
+const FOLGA_DE_CLIQUE = 5;
+
+/**
+ * Arrastar o trilho com o ponteiro, e soltá-lo com inércia.
+ *
+ * No toque isso já existe — a rolagem por gesto é do navegador, e refazê-la na
+ * mão só atrapalharia. O que falta é no mouse: sem isto, no desktop só há a
+ * roda, e num trilho horizontal ela é o gesto errado.
+ *
+ * O encaixe fica desligado durante o arrasto e a inércia, e volta quando o
+ * movimento acaba — é ele que fecha o percurso num item inteiro, e daí o
+ * escutador de rolagem escolhe quem ficou no centro.
+ */
+function arrastoComInercia(el) {
+  let arrastando = false;
+  let partidaX = 0;
+  let partidaScroll = 0;
+  let percorrido = 0;
+  let amostras = [];
+  let quadro;
+  let snapOriginal = '';
+
+  const parar = () => { if (quadro) cancelAnimationFrame(quadro); quadro = undefined; };
+  const restaurarSnap = () => { el.style.scrollSnapType = snapOriginal; };
+
+  const aoPressionar = (e) => {
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    parar();
+    arrastando = true;
+    percorrido = 0;
+    partidaX = e.clientX;
+    partidaScroll = el.scrollLeft;
+    amostras = [{ t: performance.now(), x: e.clientX }];
+    snapOriginal = el.style.scrollSnapType;
+    el.style.scrollSnapType = 'none';
+    el.style.userSelect = 'none';
+    el.classList.add('arrastando');
+    // A captura é o que mantém o gesto vivo quando o ponteiro sai do trilho.
+    // Falha se o ponteiro já não estiver ativo, e aí o arrasto segue sem ela.
+    try { el.setPointerCapture(e.pointerId); } catch { /* sem captura */ }
+  };
+
+  const aoMover = (e) => {
+    if (!arrastando) return;
+    const dx = e.clientX - partidaX;
+    percorrido = Math.max(percorrido, Math.abs(dx));
+    el.scrollLeft = partidaScroll - dx;
+    amostras.push({ t: performance.now(), x: e.clientX });
+    if (amostras.length > 6) amostras.shift();
+  };
+
+  const aoSoltar = (e) => {
+    if (!arrastando) return;
+    arrastando = false;
+    try { el.releasePointerCapture(e.pointerId); } catch { /* já solto */ }
+    el.style.userSelect = '';
+    el.classList.remove('arrastando');
+
+    // A velocidade sai só das amostras recentes: usar o gesto inteiro faria uma
+    // arrancada longa e um freio no fim virarem "velocidade média alta", e o
+    // trilho sairia voando de um movimento que terminou parado.
+    const agora = performance.now();
+    const recentes = amostras.filter((a) => agora - a.t < 90);
+    const primeira = recentes[0];
+    const ultima = recentes[recentes.length - 1];
+    let v = primeira && ultima.t > primeira.t
+      ? (ultima.x - primeira.x) / (ultima.t - primeira.t)
+      : 0;
+
+    if (Math.abs(v) < 0.05 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      restaurarSnap();
+      return;
+    }
+
+    let anterior = agora;
+    const passo = (t) => {
+      // O teto no intervalo evita um salto depois de um quadro perdido.
+      const dt = Math.min(t - anterior, 32);
+      anterior = t;
+      el.scrollLeft -= v * dt;
+      v *= 0.94 ** (dt / 16.67);
+
+      const naPonta = el.scrollLeft <= 0 || el.scrollLeft >= el.scrollWidth - el.clientWidth;
+      if (Math.abs(v) > 0.02 && !naPonta) { quadro = requestAnimationFrame(passo); return; }
+      quadro = undefined;
+      restaurarSnap();
+    };
+    quadro = requestAnimationFrame(passo);
+  };
+
+  // Sem isto, arrastar terminaria escolhendo o item onde o dedo parou: o clique
+  // nasce do `pointerup` e chegaria ao botão como se ninguém tivesse arrastado.
+  const aoClicar = (e) => {
+    if (percorrido <= FOLGA_DE_CLIQUE) return;
+    e.stopPropagation();
+    e.preventDefault();
+  };
+
+  const aoArrastarNativo = (e) => e.preventDefault();
+
+  el.addEventListener('pointerdown', aoPressionar);
+  el.addEventListener('pointermove', aoMover);
+  el.addEventListener('pointerup', aoSoltar);
+  el.addEventListener('pointercancel', aoSoltar);
+  el.addEventListener('click', aoClicar, true);
+  el.addEventListener('dragstart', aoArrastarNativo);
+
+  return () => {
+    parar();
+    el.removeEventListener('pointerdown', aoPressionar);
+    el.removeEventListener('pointermove', aoMover);
+    el.removeEventListener('pointerup', aoSoltar);
+    el.removeEventListener('pointercancel', aoSoltar);
+    el.removeEventListener('click', aoClicar, true);
+    el.removeEventListener('dragstart', aoArrastarNativo);
+  };
+}
+
 /**
  * Comportamento de carrossel, compartilhado por quem precisa dele.
  *
- * São duas coisas, e elas convergem para o mesmo estado: o item escolhido vai
+ * São três coisas, e elas convergem para o mesmo estado: o item escolhido vai
  * para o centro com inércia — inclusive quando a escolha vem de fora do
- * carrossel —, e rolar o trilho escolhe quem parar no centro.
+ * carrossel —, o trilho pode ser arrastado com o ponteiro, e o que parar no
+ * centro passa a ser o escolhido.
  *
  * `pronto` existe para quem monta o trilho depois de buscar dados: enquanto for
  * falso não há item nenhum no DOM para centralizar, e sem esse aviso o primeiro
@@ -149,8 +270,14 @@ export function useCarrossel({ selecionado, aoSelecionar, pronto = true }) {
       }, 140);
     };
 
+    const soltarArrasto = arrastoComInercia(el);
+
     el.addEventListener('scroll', aoRolar, { passive: true });
-    return () => { el.removeEventListener('scroll', aoRolar); clearTimeout(tempo); };
+    return () => {
+      soltarArrasto();
+      el.removeEventListener('scroll', aoRolar);
+      clearTimeout(tempo);
+    };
     // `pronto` está aqui porque o trilho de quem busca dados só existe no DOM
     // depois da resposta: na primeira renderização não há elemento em que
     // escutar, e sem refazer o efeito a rolagem nunca chegaria a selecionar.
