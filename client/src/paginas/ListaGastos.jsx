@@ -309,8 +309,12 @@ function Origem({ d }) {
  * Tipo do gasto. Em parcelamento, o "4/10" vira barra de andamento: dá para ver
  * de relance quais compras estão quase quitadas e quais mal começaram — coisa
  * que uma fração solta no meio da tabela não entrega.
+ *
+ * Exportado porque o painel mostra os maiores gastos do mês, e lá a leitura é a
+ * mesma: uma parcela de R$ 600 no topo da lista diz uma coisa se é a 9ª de 10 e
+ * outra bem diferente se é a 1ª de 12.
  */
-function Tipo({ d, semEtiqueta = false }) {
+export function Tipo({ d, semEtiqueta = false }) {
   if (d.origem !== 'parcelamento') {
     return <span className={`etiqueta ${d.origem}`}>{ROTULO_ORIGEM[d.origem]}</span>;
   }

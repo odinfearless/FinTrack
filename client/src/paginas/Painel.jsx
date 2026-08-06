@@ -4,8 +4,7 @@ import { useMes } from '../App.jsx';
 import { brl, pct, rotuloMes } from '../formato.js';
 import { Barras, Estado, Indicador, useDados, Valor, Vazio } from '../componentes.jsx';
 import { corDeMarca } from '../CartaoVisual.jsx';
-
-const ROTULO_ORIGEM = { avulso: 'avulso', parcelamento: 'parcela' };
+import { Tipo } from './ListaGastos.jsx';
 
 const arred = (n) => Math.round(n * 100) / 100;
 
@@ -178,12 +177,7 @@ function Conteudo({ r, mes }) {
                       {d.descricao}
                       {d.pessoa && <span className="etiqueta" style={{ marginLeft: 8 }}>{d.pessoa}</span>}
                     </td>
-                    <td>
-                      <span className={`etiqueta ${d.origem}`}>
-                        {ROTULO_ORIGEM[d.origem]}
-                        {d.origem === 'parcelamento' && ` ${d.parcela_atual}/${d.parcelas}`}
-                      </span>
-                    </td>
+                    <td><Tipo d={d} /></td>
                     <td className="num"><Valor v={d.valor} /></td>
                   </tr>
                 ))}
