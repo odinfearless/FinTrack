@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { api, recurso } from '../api.js';
 import { useMes } from '../App.jsx';
 import { brl, rotuloMes, vigencia } from '../formato.js';
@@ -6,6 +7,7 @@ import {
   Campo, CamposVigencia, EntradaMoeda, Estado, MenuAcoes, Modal, useAviso, useConfirmacao, useCrud,
   useDados, Valor, Vazio,
 } from '../componentes.jsx';
+import ModalLimpezaVigencia from '../LimpezaVigencia.jsx';
 
 const contas = recurso('contas');
 
@@ -24,6 +26,8 @@ export default function Contas() {
   const { confirmar, elemento: dialogo } = useConfirmacao();
   const cadastros = useCadastros();
   const consulta = useDados(() => api.get('/contas'), []);
+  const contasBancarias = useDados(() => api.get('/contas-bancarias'), []);
+  const [limpando, setLimpando] = useState(false);
 
   const crud = useCrud({
     recurso: contas,
@@ -47,6 +51,11 @@ export default function Contas() {
     <>
       <div className="filtros">
         <span style={{ flex: 1 }} />
+        {lista.length > 0 && (
+          <button type="button" className="botao" onClick={() => setLimpando(true)}>
+            Limpar contas
+          </button>
+        )}
         <button type="button" className="botao primario" onClick={() => crud.abrir(vazio(mes))}>
           + Nova conta
         </button>
@@ -85,6 +94,9 @@ export default function Contas() {
                         <td>
                           {c.descricao}
                           {!ativa && <span className="etiqueta" style={{ marginLeft: 8 }}>fora do mês</span>}
+                          {c.conta_bancaria && (
+                            <div className="fraco" style={{ fontSize: 12.5 }}>debitada em {c.conta_bancaria}</div>
+                          )}
                         </td>
                         <td><span className="etiqueta">{c.forma}</span></td>
                         <td>{c.categoria || <span className="fraco">—</span>}</td>
@@ -174,6 +186,23 @@ export default function Contas() {
           </>
         )}
       </Modal>
+
+      {limpando && (
+        <ModalLimpezaVigencia
+          recurso="contas"
+          mes={mes}
+          contasBancarias={contasBancarias.dados || []}
+          aoFechar={() => setLimpando(false)}
+          aoConcluir={(r) => {
+            setLimpando(false);
+            consulta.recarregar();
+            aviso(r.quantidade === 0
+              ? 'Nada foi apagado — nenhuma conta caía nesse recorte.'
+              : `${r.quantidade} ${r.quantidade === 1 ? 'conta apagada' : 'contas apagadas'}`
+                + ` (${brl(r.total)}). Cópia do banco salva antes de apagar.`);
+          }}
+        />
+      )}
 
       {dialogo}
     </>

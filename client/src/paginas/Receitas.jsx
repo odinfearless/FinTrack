@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { api, recurso } from '../api.js';
 import { useMes } from '../App.jsx';
 import { brl, rotuloMes, vigencia } from '../formato.js';
@@ -5,6 +6,7 @@ import {
   Campo, CamposVigencia, EntradaMoeda, Estado, MenuAcoes, Modal, useAviso, useConfirmacao, useCrud,
   useDados, Vazio,
 } from '../componentes.jsx';
+import ModalLimpezaVigencia from '../LimpezaVigencia.jsx';
 
 const receitas = recurso('receitas');
 
@@ -25,6 +27,8 @@ export default function Receitas() {
 
   const consulta = useDados(() => api.get('/receitas'), []);
   const resumo = useDados(() => api.get('/resumo', { mes }), [mes]);
+  const contasBancarias = useDados(() => api.get('/contas-bancarias'), []);
+  const [limpando, setLimpando] = useState(false);
 
   const crud = useCrud({
     recurso: receitas,
@@ -44,6 +48,11 @@ export default function Receitas() {
     <>
       <div className="filtros">
         <span style={{ flex: 1 }} />
+        {lista.length > 0 && (
+          <button type="button" className="botao" onClick={() => setLimpando(true)}>
+            Limpar receitas
+          </button>
+        )}
         <button type="button" className="botao primario" onClick={() => crud.abrir(vazio(mes))}>
           + Nova receita
         </button>
@@ -98,6 +107,9 @@ export default function Receitas() {
                         <td>
                           {r.descricao}
                           {!ativa && <span className="etiqueta" style={{ marginLeft: 8 }}>fora do mês</span>}
+                          {r.conta_bancaria && (
+                            <div className="fraco" style={{ fontSize: 12.5 }}>cai em {r.conta_bancaria}</div>
+                          )}
                         </td>
                         <td><span className="etiqueta">{r.tipo}</span></td>
                         <td className="fraco" style={{ whiteSpace: 'nowrap' }}>{vigencia(r.mes_inicio, r.mes_fim)}</td>
@@ -165,6 +177,24 @@ export default function Receitas() {
           </>
         )}
       </Modal>
+
+      {limpando && (
+        <ModalLimpezaVigencia
+          recurso="receitas"
+          mes={mes}
+          contasBancarias={contasBancarias.dados || []}
+          aoFechar={() => setLimpando(false)}
+          aoConcluir={(r) => {
+            setLimpando(false);
+            consulta.recarregar();
+            resumo.recarregar();
+            aviso(r.quantidade === 0
+              ? 'Nada foi apagado — nenhuma receita caía nesse recorte.'
+              : `${r.quantidade} ${r.quantidade === 1 ? 'receita apagada' : 'receitas apagadas'}`
+                + ` (${brl(r.total)}). Cópia do banco salva antes de apagar.`);
+          }}
+        />
+      )}
 
       {dialogo}
     </>

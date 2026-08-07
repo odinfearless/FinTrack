@@ -94,8 +94,9 @@ recolhido no fim da lista, para continuarem alcançáveis.
 - **Contas e débitos** — o que é pago fora do cartão
 - **Receitas** — salário, extras e ajustes (aceita valor negativo)
 - **Cartões** — cadastro com cartão visual (bandeira e 4 últimos dígitos), limite, fechamento/vencimento e encargos do mês
+- **Contas bancárias** — a conta corrente de onde saem os débitos e onde a receita cai: saldo e limite lidos do extrato
 - **Categorias e pessoas** — classificação e quem reembolsa
-- **Importar gastos** — trazer um `.xlsx` ou uma **fatura em PDF/imagem** para dentro do banco
+- **Importar gastos** — trazer um `.xlsx`, uma **fatura em PDF/imagem** ou o **extrato da conta em PDF** para dentro do banco
 
 ## Importando a fatura do cartão
 
@@ -236,6 +237,86 @@ boleto ou débito** em vez de um cartão, o lançamento vai para o grupo
 **Sem cartão** — que aparece como uma cédula, no lugar do plástico, e entra no
 total do mês como qualquer outro gasto.
 
+## Importando o extrato da conta corrente
+
+O segundo bloco da tela **Importar gastos** aceita o PDF do extrato da conta. A
+diferença para a fatura não é o formato: na fatura toda linha é despesa e o que
+se decide é a categoria; no extrato cada linha pode ser dinheiro entrando ou
+saindo, e cada uma vai para um lugar diferente do app.
+
+A separação é automática:
+
+| No extrato | Vira |
+| --- | --- |
+| Dinheiro que entrou | **Receita** — salário como `fixa`, o resto como `variável` |
+| Débito com nome de empresa (`DA ELETROPAULO`, `SABESP`, seguro, telefone) | **Conta fixa**, com a categoria sugerida |
+| Juros, IOF, tarifa | **Conta fixa** do mês |
+| O resto que saiu (Pix, transferência, saque) | **Gasto avulso**, com a forma deduzida |
+
+Nada disso é definitivo: o **destino de cada linha é um select na tabela de
+revisão**, e trocá-lo ajusta o sinal do valor junto — em `receitas` o negativo
+significa desconto, em `contas` e `lancamentos` despesa é sempre positiva.
+
+Três decisões valem explicação:
+
+- **O saldo do dia não vira despesa.** Extrato traz o valor do lançamento e o
+  saldo corrente lado a lado, e só a posição X separa os dois. O leitor acha o
+  cabeçalho `valor (R$) | saldo (R$)` e usa o meio do caminho entre eles como
+  corte. Sem isso, `SALDO DO DIA -1.203,55` entraria como um gasto de mil e
+  duzentos reais que nunca aconteceu. É por essa dependência de coordenadas que
+  aqui **só entra PDF** — num print não há como saber de que coluna veio o
+  número.
+- **Cada lançamento entra no mês da própria data.** O extrato do Itaú vai do dia
+  7 de um mês ao dia 6 do seguinte; jogar tudo numa competência só mandaria o
+  salário do dia 6 para o mês errado — justamente o maior número da conta.
+- **Nada entra como recorrente.** O extrato mostra um mês, e afirmar a partir
+  dele que a conta de luz vale para sempre espalharia pela projeção um valor que
+  muda toda fatura. Cada conta e cada receita entram valendo **só naquele mês**,
+  com uma caixinha **repete** ao lado para quando for igual todo mês. Onde o
+  extrato declara a parcela (`ITAU SEG AP PF 11/12`), a vigência já vem fechada
+  até a última — para a frente, nunca para trás: as parcelas vencidas pertencem
+  a meses que você já fechou.
+
+### O que chega desmarcado, e por quê
+
+- **Pagamento da fatura do cartão** (`FATURA PAGA`). É a linha mais perigosa do
+  extrato: as compras que ela quita já estão no app pela importação da fatura, e
+  importar o pagamento contaria o cartão inteiro duas vezes no mesmo mês.
+- **Aplicação e resgate.** O dinheiro mudou de lugar, mas continua seu — não é
+  ganho nem gasto.
+- **O que já existe.** Nas receitas e nos gastos, quando descrição e valor
+  batem; nas contas, basta o **nome** bater, mesmo com valor diferente —
+  cadastrar a segunda "Eletropaulo" faria as duas somarem no painel.
+
+### A conferência que o próprio extrato faz
+
+O saldo do último dia menos o do primeiro é, por definição, tudo o que entrou e
+saiu no meio. A tela compara as duas contas e diz se fecham:
+
+> **O extrato fecha.** As linhas lidas somam R$ 305,80, e o saldo da conta variou
+> exatamente isso entre 06/07/2026 e 06/08/2026 — de -R$ 1.014,43 para
+> -R$ 708,63. Nenhum lançamento ficou para trás.
+
+É o equivalente ao total declarado na fatura, só que aqui o documento faz a conta
+sozinho.
+
+## Contas bancárias
+
+O extrato também traz o contexto da conta: banco, agência, número, saldo e limite
+(usado, disponível, total). Um clique cadastra a conta a partir do arquivo, e um
+extrato mais novo atualiza saldo e limites sem digitar nada — a conta é
+reconhecida pela agência e pelo número.
+
+**Nome do titular e CPF não são lidos.** Identificam a pessoa, não a conta, e
+guardar dado pessoal que nunca vai ser usado só aumenta o estrago se o arquivo do
+banco vazar. É a mesma regra dos 4 últimos dígitos do cartão.
+
+Contas, receitas e gastos importados ficam ligados à conta de onde saíram, e as
+telas de **Contas e débitos** e **Receitas** mostram isso embaixo da descrição
+("debitada em Itaú 8493"). O vínculo é opcional: quem lança à mão não precisa
+dele, e apagar uma conta bancária não apaga lançamento nenhum — eles só deixam de
+apontar para ela.
+
 O cabeçalho da tela — chips de origem, desenho e total — é **o mesmo em qualquer
 largura**; quem reflui é o CSS. Só a listagem troca de marcação, em 860px:
 tabela onde há largura para comparar valores em coluna, cartões empilhados onde
@@ -290,6 +371,34 @@ preto some contra o fundo do tema escuro. Por isso o preto vale para o plástico
 mas quando a mesma cor vira marca de dado ela é clareada o suficiente para
 continuar visível nos dois temas (`corDeMarca`, em `client/src/CartaoVisual.jsx`).
 
+## Limpar contas e receitas
+
+**Contas e débitos** tem um botão **Limpar contas**, e **Receitas** um **Limpar
+receitas**. Os dois abrem a mesma tela, porque os dois cadastros têm a mesma
+forma e o mesmo risco — e repetem o desenho da limpeza de cartão: a prévia vem
+do servidor a cada mudança de recorte e é ela, não o texto do botão, que diz o
+que vai sumir; uma cópia do banco é gravada em `data/` antes de apagar.
+
+O recorte tem três eixos, combináveis:
+
+- **Só um mês** ou **tudo o que está cadastrado**;
+- **só o que vale apenas naquele mês**, marcado por padrão;
+- **só o que veio de uma conta bancária**, quando há alguma cadastrada.
+
+A opção do meio existe por causa da armadilha da vigência: conta e receita são
+**cadastros**, não lançamentos de um mês. A luz cadastrada em janeiro e sem data
+para acabar aparece em agosto por ser **uma linha só** — apagá-la porque agosto
+ficou errado a tira de janeiro a dezembro junto, e o mesmo vale para o salário.
+Desmarcando a opção, a tela avisa disso antes de deixar apagar.
+
+O recorte por conta bancária é o que desfaz **uma importação de extrato** sem
+desmontar o que já estava certo.
+
+A parte que apaga é a mesma dos dois lados (`server/services/limpeza.js`), e o
+recorte também (`limpezaVigencia.js`): prévia e `DELETE` saem sempre da mesma
+consulta, que é o que impede a tela de prometer três registros e o banco levar
+trinta.
+
 ## Como o dinheiro é somado
 
 ```
@@ -308,11 +417,14 @@ mostrando o valor real que o banco vai cobrar.
 
 ```
 server/
-  db/schema.sql          esquema do SQLite
-  lib/                   crud genérico, aritmética de competências
-  services/mes.js        expande as parcelas do mês e consolida o total
-  services/importador.js leitura da planilha
-  routes/                endpoints REST
+  db/schema.sql            esquema do SQLite
+  lib/                     crud genérico, aritmética de competências
+  services/mes.js          expande as parcelas do mês e consolida o total
+  services/importador.js   leitura da planilha
+  services/leitorFatura.js leitura da fatura do cartão (PDF e imagem)
+  services/leitorExtrato.js leitura do extrato da conta (PDF)
+  services/categorias.js   sugestão de categoria, usada pelos dois leitores
+  routes/                  endpoints REST
 client/src/
   paginas/               uma tela por arquivo
   componentes.jsx        modal, tabela, barras, avisos, hooks de CRUD

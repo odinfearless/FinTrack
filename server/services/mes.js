@@ -14,26 +14,46 @@ const JOINS = `
   LEFT JOIN categorias cat ON cat.id = t.categoria_id
   LEFT JOIN pessoas    p   ON p.id   = t.pessoa_id`;
 
-const qAvulsos = db.prepare(`
+/**
+ * Consulta preparada na primeira vez que é usada, e não ao carregar o módulo.
+ *
+ * O ESM avalia os imports antes do corpo de quem importa, então este arquivo é
+ * lido antes de `migrar()` rodar lá no index.js. Preparando aqui em cima, um
+ * banco novo nem abre — as tabelas ainda não existem — e um banco antigo quebra
+ * assim que uma consulta mencionar tabela ou coluna criada pela migração.
+ */
+function consulta(sql) {
+  let pronta = null;
+  return () => {
+    if (!pronta) pronta = db.prepare(sql);
+    return pronta;
+  };
+}
+
+const qAvulsos = consulta(`
   SELECT t.*, ${SELECT_CARTAO} FROM lancamentos t ${JOINS}
   WHERE t.mes = ? ORDER BY t.valor DESC`);
 
-const qParcelamentos = db.prepare(`
+const qParcelamentos = consulta(`
   SELECT t.*, ${SELECT_CARTAO} FROM parcelamentos t ${JOINS}
   WHERE t.mes_inicio <= ? ORDER BY t.valor_parcela DESC`);
 
-const qContas = db.prepare(`
-  SELECT t.*, cat.nome AS categoria, cat.cor AS categoria_cor
-  FROM contas t LEFT JOIN categorias cat ON cat.id = t.categoria_id
+const qContas = consulta(`
+  SELECT t.*, cat.nome AS categoria, cat.cor AS categoria_cor, cb.nome AS conta_bancaria
+  FROM contas t
+  LEFT JOIN categorias       cat ON cat.id = t.categoria_id
+  LEFT JOIN contas_bancarias cb  ON cb.id  = t.conta_bancaria_id
   WHERE t.mes_inicio <= ? AND (t.mes_fim IS NULL OR t.mes_fim >= ?)
   ORDER BY t.valor DESC`);
 
-const qReceitas = db.prepare(`
-  SELECT * FROM receitas
-  WHERE mes_inicio <= ? AND (mes_fim IS NULL OR mes_fim >= ?)
-  ORDER BY valor DESC`);
+const qReceitas = consulta(`
+  SELECT t.*, cb.nome AS conta_bancaria
+  FROM receitas t
+  LEFT JOIN contas_bancarias cb ON cb.id = t.conta_bancaria_id
+  WHERE t.mes_inicio <= ? AND (t.mes_fim IS NULL OR t.mes_fim >= ?)
+  ORDER BY t.valor DESC`);
 
-const qEncargos = db.prepare(`
+const qEncargos = consulta(`
   SELECT e.*, c.nome AS cartao FROM encargos e
   JOIN cartoes c ON c.id = e.cartao_id WHERE e.mes = ?`);
 
@@ -62,7 +82,7 @@ function base(linha, origem) {
 export function despesasDoMes(mes) {
   const saida = [];
 
-  for (const l of qAvulsos.all(mes)) {
+  for (const l of qAvulsos().all(mes)) {
     saida.push({
       ...base(l, 'avulso'),
       data: l.data,
@@ -72,7 +92,7 @@ export function despesasDoMes(mes) {
     });
   }
 
-  for (const p of qParcelamentos.all(mes)) {
+  for (const p of qParcelamentos().all(mes)) {
     const indice = diferencaMeses(p.mes_inicio, mes); // 0 = primeira parcela
     if (indice < 0 || indice >= p.parcelas) continue;
     const restantes = p.parcelas - (indice + 1);
@@ -93,14 +113,14 @@ export function despesasDoMes(mes) {
 }
 
 export function contasDoMes(mes) {
-  return qContas.all(mes, mes).map((c) => ({
+  return qContas().all(mes, mes).map((c) => ({
     ...c,
     recorrente: c.mes_fim === null || c.mes_fim !== c.mes_inicio,
   }));
 }
 
 export function receitasDoMes(mes) {
-  return qReceitas.all(mes, mes).map((r) => ({
+  return qReceitas().all(mes, mes).map((r) => ({
     ...r,
     recorrente: r.mes_fim === null || r.mes_fim !== r.mes_inicio,
   }));
@@ -115,7 +135,7 @@ export function resumoDoMes(mes) {
   const despesas = despesasDoMes(mes);
   const contas = contasDoMes(mes);
   const receitas = receitasDoMes(mes);
-  const encargos = qEncargos.all(mes);
+  const encargos = qEncargos().all(mes);
 
   const porCartao = new Map();
   for (const c of db.prepare('SELECT * FROM cartoes WHERE ativo = 1 ORDER BY nome').all()) {

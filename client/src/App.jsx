@@ -9,6 +9,7 @@ import Despesas from './paginas/Despesas.jsx';
 import Receitas from './paginas/Receitas.jsx';
 import Contas from './paginas/Contas.jsx';
 import Cartoes from './paginas/Cartoes.jsx';
+import ContasBancarias from './paginas/ContasBancarias.jsx';
 import Cadastros from './paginas/Cadastros.jsx';
 import Projecao from './paginas/Projecao.jsx';
 import Importar from './paginas/Importar.jsx';
@@ -67,6 +68,7 @@ const MENU = [
     titulo: 'Cadastros',
     itens: [
       { para: '/cartoes', ic: '▭', texto: 'Cartões' },
+      { para: '/contas-bancarias', ic: '⛁', texto: 'Contas bancárias' },
       { para: '/cadastros', ic: '⚑', texto: 'Categorias e pessoas' },
       { para: '/importar', ic: '⇪', texto: 'Importar gastos' },
     ],
@@ -169,6 +171,7 @@ const TITULOS = {
   '/contas': 'Contas e débitos',
   '/receitas': 'Receitas',
   '/cartoes': 'Cartões',
+  '/contas-bancarias': 'Contas bancárias',
   '/cadastros': 'Categorias e pessoas',
   '/importar': 'Importar gastos',
 };
@@ -229,6 +232,7 @@ export default function App() {
                 <Route path="/contas" element={<Contas />} />
                 <Route path="/receitas" element={<Receitas />} />
                 <Route path="/cartoes" element={<Cartoes />} />
+                <Route path="/contas-bancarias" element={<ContasBancarias />} />
                 <Route path="/cadastros" element={<Cadastros />} />
                 <Route path="/importar" element={<Importar />} />
                 <Route path="*" element={<Navigate to="/painel" replace />} />

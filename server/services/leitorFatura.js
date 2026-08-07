@@ -10,6 +10,7 @@
  */
 
 import { detectarRegioesMarcadas } from './marcacaoColorida.js';
+import { normalizar, sugerirCategoria } from './categorias.js';
 
 /* ------------------------------ extração --------------------------------- */
 
@@ -374,10 +375,6 @@ const RX_DATA_TEXTO = /^(\d{1,2})\s*(?:de\s*)?(jan|fev|mar|abr|mai|jun|jul|ago|s
 
 // "PARC 03/10", "3/10", "PARCELA 3 DE 10", "03 DE 10"
 const RX_PARCELA = /(?:parc(?:ela)?\.?\s*)?(\d{1,2})\s*(?:\/|\s+de\s+)\s*(\d{1,2})\b/i;
-
-const normalizar = (v) => String(v ?? '')
-  .normalize('NFD').replace(/\p{Diacritic}/gu, '')
-  .toLowerCase().replace(/\s+/g, ' ').trim();
 
 function lerValor(bruto, sinalNegativo) {
   const n = Number(`${bruto.inteiro.replace(/\./g, '')}.${bruto.centavos}`);
@@ -845,47 +842,6 @@ function normalizarListaDeApp(linhas) {
     ].filter(Boolean).join(' ')),
     ignoradas,
   };
-}
-
-/**
- * Sugere categoria comparando a descrição com o nome das categorias
- * cadastradas e com apelidos comuns de estabelecimento.
- */
-const APELIDOS = {
-  ifood: ['ifood', 'rappi', 'ze delivery'],
-  mercado: ['supermerc', 'atacad', 'carrefour', 'assai', 'pao de acucar', 'hortifruti'],
-  combustivel: ['posto', 'shell', 'ipiranga', 'petrobras', 'br distrib', 'combusti'],
-  uber: ['uber', '99app', '99 tecnologia', 'cabify', 'taxi'],
-  saude: ['farmac', 'drogaria', 'droga raia', 'panvel', 'laborat', 'clinica', 'hospital', 'odonto'],
-  'compras online': ['mercado livre', 'mercadolivre', 'mercpago', 'amazon', 'magazine', 'shopee', 'aliexpress', 'americanas'],
-  assinaturas: ['spotify', 'netflix', 'disney', 'hbo max', 'youtube', 'apple.com', 'prime video'],
-  lazer: ['cinema', 'ingresso', 'teatro', 'restaurante', 'lanchonete', 'padaria'],
-};
-
-function sugerirCategoria(descricao, categorias) {
-  const alvo = normalizar(descricao);
-  if (!alvo) return null;
-
-  // Todos os candidatos disputam, e vence o termo mais longo — assim
-  // "mercado livre" ganha de "mercado" e a compra não cai em supermercado.
-  const candidatos = [];
-
-  for (const c of categorias) {
-    const nome = normalizar(c.nome);
-    if (nome.length >= 3 && alvo.includes(nome)) candidatos.push({ id: c.id, peso: nome.length });
-  }
-
-  for (const [nomeCategoria, termos] of Object.entries(APELIDOS)) {
-    const chave = normalizar(nomeCategoria);
-    const categoria = categorias.find((c) => normalizar(c.nome).startsWith(chave.slice(0, 6)));
-    if (!categoria) continue;
-    for (const termo of termos) {
-      if (alvo.includes(termo)) candidatos.push({ id: categoria.id, peso: termo.length });
-    }
-  }
-
-  if (candidatos.length === 0) return null;
-  return candidatos.sort((a, b) => b.peso - a.peso)[0].id;
 }
 
 // O total da fatura, quando o documento o declara. Não vira lançamento: serve
