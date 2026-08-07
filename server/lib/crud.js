@@ -102,42 +102,74 @@ export function criarCrud({ tabela, campos, ordem = 'id DESC', listar, aoSalvar 
 
   const buscar = (id) => db.prepare(`SELECT * FROM ${tabela} WHERE id = ?`).get(id);
 
-  router.get('/', (req, res) => {
-    res.json(listar ? listar(req.query) : db.prepare(`SELECT * FROM ${tabela} ORDER BY ${ordem}`).all());
+  /**
+   * O id vem da URL e entra na consulta como parâmetro, nunca concatenado —
+   * mas o Postgres é estrito com tipo, e comparar INTEGER com o texto "abc"
+   * é erro de banco, não "não encontrado". Converter aqui transforma um id
+   * inválido no 404 que ele sempre foi.
+   */
+  const idValido = (bruto) => {
+    const n = Number(bruto);
+    return Number.isInteger(n) ? n : null;
+  };
+
+  router.get('/', async (req, res, next) => {
+    try {
+      res.json(listar
+        ? await listar(req.query)
+        : await db.prepare(`SELECT * FROM ${tabela} ORDER BY ${ordem}`).all());
+    } catch (erro) { next(erro); }
   });
 
-  router.get('/:id', (req, res) => {
-    const linha = buscar(req.params.id);
-    if (!linha) return res.status(404).json({ erro: 'Registro não encontrado.' });
-    return res.json(linha);
+  router.get('/:id', async (req, res, next) => {
+    try {
+      const id = idValido(req.params.id);
+      const linha = id === null ? null : await buscar(id);
+      if (!linha) return res.status(404).json({ erro: 'Registro não encontrado.' });
+      return res.json(linha);
+    } catch (erro) { return next(erro); }
   });
 
-  router.post('/', (req, res) => {
-    const dados = filtrar(req.body || {}, campos, { exigirObrigatorios: true });
-    if (aoSalvar) aoSalvar(dados, null);
-    const usados = nomes.filter((n) => n in dados);
-    const sql = `INSERT INTO ${tabela} (${usados.join(', ')})
-                 VALUES (${usados.map((n) => `@${n}`).join(', ')})`;
-    const info = db.prepare(sql).run(dados);
-    res.status(201).json(buscar(info.lastInsertRowid));
+  router.post('/', async (req, res, next) => {
+    try {
+      const dados = filtrar(req.body || {}, campos, { exigirObrigatorios: true });
+      if (aoSalvar) aoSalvar(dados, null);
+      const usados = nomes.filter((n) => n in dados);
+      // `RETURNING *` no lugar do `lastInsertRowid` do SQLite: o registro
+      // gravado volta na mesma ida ao banco, sem um SELECT depois.
+      const sql = `INSERT INTO ${tabela} (${usados.join(', ')})
+                   VALUES (${usados.map((n) => `@${n}`).join(', ')})
+                   RETURNING *`;
+      const { linha } = await db.prepare(sql).run(dados);
+      res.status(201).json(linha);
+    } catch (erro) { next(erro); }
   });
 
-  router.put('/:id', (req, res) => {
-    const atual = buscar(req.params.id);
-    if (!atual) return res.status(404).json({ erro: 'Registro não encontrado.' });
-    const dados = filtrar(req.body || {}, campos, { exigirObrigatorios: false });
-    if (aoSalvar) aoSalvar(dados, atual);
-    const usados = nomes.filter((n) => n in dados);
-    if (usados.length === 0) return res.json(atual);
-    const sql = `UPDATE ${tabela} SET ${usados.map((n) => `${n} = @${n}`).join(', ')} WHERE id = @id`;
-    db.prepare(sql).run({ ...dados, id: Number(req.params.id) });
-    return res.json(buscar(req.params.id));
+  router.put('/:id', async (req, res, next) => {
+    try {
+      const id = idValido(req.params.id);
+      const atual = id === null ? null : await buscar(id);
+      if (!atual) return res.status(404).json({ erro: 'Registro não encontrado.' });
+      const dados = filtrar(req.body || {}, campos, { exigirObrigatorios: false });
+      if (aoSalvar) aoSalvar(dados, atual);
+      const usados = nomes.filter((n) => n in dados);
+      if (usados.length === 0) return res.json(atual);
+      const sql = `UPDATE ${tabela} SET ${usados.map((n) => `${n} = @${n}`).join(', ')}
+                   WHERE id = @id RETURNING *`;
+      const { linha } = await db.prepare(sql).run({ ...dados, id });
+      return res.json(linha);
+    } catch (erro) { return next(erro); }
   });
 
-  router.delete('/:id', (req, res) => {
-    const info = db.prepare(`DELETE FROM ${tabela} WHERE id = ?`).run(req.params.id);
-    if (info.changes === 0) return res.status(404).json({ erro: 'Registro não encontrado.' });
-    return res.status(204).end();
+  router.delete('/:id', async (req, res, next) => {
+    try {
+      const id = idValido(req.params.id);
+      const info = id === null
+        ? { changes: 0 }
+        : await db.prepare(`DELETE FROM ${tabela} WHERE id = ?`).run(id);
+      if (info.changes === 0) return res.status(404).json({ erro: 'Registro não encontrado.' });
+      return res.status(204).end();
+    } catch (erro) { return next(erro); }
   });
 
   return router;

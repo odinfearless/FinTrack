@@ -32,10 +32,10 @@ importacao.get('/planilhas', (_req, res) => {
 });
 
 /** Importação de uma planilha enviada pela tela. */
-importacao.post('/arquivo', upload.single('arquivo'), (req, res, next) => {
+importacao.post('/arquivo', upload.single('arquivo'), async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ erro: 'Nenhum arquivo foi enviado.' });
-    return res.json(importarPlanilha({
+    return res.json(await importarPlanilha({
       conteudo: req.file.buffer,
       nome: req.file.originalname,
       ano: req.body?.ano ? Number(req.body.ano) : undefined,
@@ -46,13 +46,13 @@ importacao.post('/arquivo', upload.single('arquivo'), (req, res, next) => {
   }
 });
 
-importacao.post('/', (req, res, next) => {
+importacao.post('/', async (req, res, next) => {
   try {
     const nome = req.body?.arquivo;
     if (!nome) return res.status(400).json({ erro: 'Informe o nome do arquivo da planilha.' });
     // Só arquivos da raiz do projeto: nada de subir a árvore de diretórios.
     const alvo = path.join(raizProjeto, path.basename(String(nome)));
-    const relatorio = importarPlanilha({
+    const relatorio = await importarPlanilha({
       arquivo: alvo,
       ano: req.body?.ano ? Number(req.body.ano) : undefined,
       substituir: req.body?.substituir !== false,

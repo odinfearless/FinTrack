@@ -18,8 +18,8 @@ export { resumirLimpeza, executarLimpeza } from './limpeza.js';
 const arred = (n) => Math.round(n * 100) / 100;
 
 /** Um parcelamento entra no recorte do mês se alguma parcela cair nele. */
-function parcelamentosNoMes(cartaoId, mes) {
-  return db.prepare('SELECT * FROM parcelamentos WHERE cartao_id = ?').all(cartaoId)
+async function parcelamentosNoMes(cartaoId, mes) {
+  return (await db.prepare('SELECT * FROM parcelamentos WHERE cartao_id = ?').all(cartaoId))
     .filter((p) => {
       const i = diferencaMeses(p.mes_inicio, mes);
       return i >= 0 && i < p.parcelas;
@@ -30,15 +30,18 @@ function parcelamentosNoMes(cartaoId, mes) {
  * Linhas que seriam apagadas, por tabela. O `valor` de cada linha é o peso que
  * ela tem no recorte: no mês, a parcela daquele mês; sem mês, a compra inteira.
  */
-export function levantarLimpeza(cartaoId, { mes = null, soAvulsos = false } = {}) {
-  const parcelamentos = soAvulsos ? []
-    : (mes ? parcelamentosNoMes(cartaoId, mes)
-      : db.prepare('SELECT * FROM parcelamentos WHERE cartao_id = ?').all(cartaoId));
+export async function levantarLimpeza(cartaoId, { mes = null, soAvulsos = false } = {}) {
+  let parcelamentos = [];
+  if (!soAvulsos) {
+    parcelamentos = mes
+      ? await parcelamentosNoMes(cartaoId, mes)
+      : await db.prepare('SELECT * FROM parcelamentos WHERE cartao_id = ?').all(cartaoId);
+  }
 
   return {
     lancamentos: mes
-      ? db.prepare('SELECT id, valor FROM lancamentos WHERE cartao_id = ? AND mes = ?').all(cartaoId, mes)
-      : db.prepare('SELECT id, valor FROM lancamentos WHERE cartao_id = ?').all(cartaoId),
+      ? await db.prepare('SELECT id, valor FROM lancamentos WHERE cartao_id = ? AND mes = ?').all(cartaoId, mes)
+      : await db.prepare('SELECT id, valor FROM lancamentos WHERE cartao_id = ?').all(cartaoId),
 
     parcelamentos: parcelamentos.map((p) => ({
       id: p.id,
@@ -46,8 +49,8 @@ export function levantarLimpeza(cartaoId, { mes = null, soAvulsos = false } = {}
     })),
 
     encargos: mes
-      ? db.prepare('SELECT id, valor FROM encargos WHERE cartao_id = ? AND mes = ?').all(cartaoId, mes)
-      : db.prepare('SELECT id, valor FROM encargos WHERE cartao_id = ?').all(cartaoId),
+      ? await db.prepare('SELECT id, valor FROM encargos WHERE cartao_id = ? AND mes = ?').all(cartaoId, mes)
+      : await db.prepare('SELECT id, valor FROM encargos WHERE cartao_id = ?').all(cartaoId),
   };
 }
 

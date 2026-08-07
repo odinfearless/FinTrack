@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { db } from '../db/index.js';
+import { db, transacao } from '../db/index.js';
 import { extrair, analisar } from '../services/leitorFatura.js';
 import { despesasDoMes } from '../services/mes.js';
 import { somarMeses, ehMes, mesAtual } from '../lib/mes.js';
@@ -27,12 +27,12 @@ const upload = multer({
  * A comparação usa as despesas já expandidas — assim uma parcela vinda de outro
  * mês também é reconhecida, não só os avulsos daquela competência.
  */
-function marcarDuplicatas(itens, mes, cartaoId) {
+async function marcarDuplicatas(itens, mes, cartaoId) {
   if (!cartaoId) return itens;
 
   const chave = (d, v) => `${String(d).toLowerCase().slice(0, 14)}|${Math.round(Number(v) * 100)}`;
   const jaTem = new Set(
-    despesasDoMes(mes)
+    (await despesasDoMes(mes))
       .filter((d) => d.cartao_id === Number(cartaoId))
       .map((d) => chave(d.descricao, d.valor)),
   );
@@ -58,7 +58,7 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
       req.file.mimetype,
     );
 
-    const categorias = db.prepare('SELECT id, nome FROM categorias').all();
+    const categorias = await db.prepare('SELECT id, nome FROM categorias').all();
     const { itens, descartadas, formato, total_fatura: totalFatura } = analisar(linhas, { mes, categorias });
 
     return res.json({
@@ -77,7 +77,7 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
       // leitura saiu como saiu.
       formato,
       total_fatura: totalFatura,
-      itens: marcarDuplicatas(itens, mes, cartaoId),
+      itens: await marcarDuplicatas(itens, mes, cartaoId),
       descartadas: descartadas.slice(0, 40),
     });
   } catch (erro) {
@@ -89,7 +89,7 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
  * Etapa 2 — grava o que o usuário revisou e confirmou.
  * Cada item vira compra avulsa ou parcelamento, conforme o tipo escolhido.
  */
-fatura.post('/confirmar', (req, res, next) => {
+fatura.post('/confirmar', async (req, res, next) => {
   try {
     const { mes, cartao_id: cartaoId, itens } = req.body || {};
 
@@ -99,19 +99,22 @@ fatura.post('/confirmar', (req, res, next) => {
       return res.status(400).json({ erro: 'Selecione ao menos um lançamento para importar.' });
     }
 
-    const cartao = db.prepare('SELECT id, nome FROM cartoes WHERE id = ?').get(cartaoId);
+    const cartao = await db.prepare('SELECT id, nome FROM cartoes WHERE id = ?').get(Number(cartaoId));
     if (!cartao) return res.status(404).json({ erro: 'Cartão não encontrado.' });
 
-    const insLancamento = db.prepare(`
-      INSERT INTO lancamentos (mes, data, cartao_id, categoria_id, pessoa_id, descricao, valor, observacao)
-      VALUES (@mes, @data, @cartao_id, @categoria_id, @pessoa_id, @descricao, @valor, @observacao)`);
-    const insParcelamento = db.prepare(`
-      INSERT INTO parcelamentos (cartao_id, categoria_id, pessoa_id, descricao, valor_parcela, parcelas, mes_inicio, data_compra)
-      VALUES (@cartao_id, @categoria_id, @pessoa_id, @descricao, @valor_parcela, @parcelas, @mes_inicio, @data_compra)`);
     const criados = { lancamentos: 0, parcelamentos: 0 };
     const ignorados = [];
 
-    const gravar = db.transaction(() => {
+    // Tudo ou nada: metade da fatura importada é pior que nenhuma, porque
+    // ninguém consegue dizer, olhando o mês, onde a importação parou.
+    await transacao(async (tx) => {
+      const insLancamento = tx.prepare(`
+        INSERT INTO lancamentos (mes, data, cartao_id, categoria_id, pessoa_id, descricao, valor, observacao)
+        VALUES (@mes, @data, @cartao_id, @categoria_id, @pessoa_id, @descricao, @valor, @observacao)`);
+      const insParcelamento = tx.prepare(`
+        INSERT INTO parcelamentos (cartao_id, categoria_id, pessoa_id, descricao, valor_parcela, parcelas, mes_inicio, data_compra)
+        VALUES (@cartao_id, @categoria_id, @pessoa_id, @descricao, @valor_parcela, @parcelas, @mes_inicio, @data_compra)`);
+
       for (const item of itens) {
         const descricao = String(item.descricao || '').trim();
         const valor = Number(item.valor);
@@ -135,7 +138,7 @@ fatura.post('/confirmar', (req, res, next) => {
             ignorados.push({ descricao, motivo: 'número de parcelas inconsistente' });
             continue;
           }
-          insParcelamento.run({
+          await insParcelamento.run({
             ...comum,
             valor_parcela: valor,
             parcelas,
@@ -147,7 +150,7 @@ fatura.post('/confirmar', (req, res, next) => {
           continue;
         }
 
-        insLancamento.run({
+        await insLancamento.run({
           ...comum,
           mes,
           data: item.data || null,
@@ -157,8 +160,6 @@ fatura.post('/confirmar', (req, res, next) => {
         criados.lancamentos += 1;
       }
     });
-
-    gravar();
 
     const total = criados.lancamentos + criados.parcelamentos;
     return res.json({ cartao: cartao.nome, mes, total, criados, ignorados });

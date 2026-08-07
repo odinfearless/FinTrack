@@ -5,8 +5,9 @@ import { mesAtual, ehMes, somarMeses, intervalo } from '../lib/mes.js';
 
 export const painel = Router();
 
-painel.get('/meses', (_req, res) => {
-  const existentes = mesesComDados();
+painel.get('/meses', async (_req, res, next) => {
+  try {
+  const existentes = await mesesComDados();
   const hoje = mesAtual();
   // Sempre oferece o mês corrente e os dois seguintes, mesmo sem lançamento.
   const conhecidos = new Set([...existentes, hoje, somarMeses(hoje, 1), somarMeses(hoje, 2)]);
@@ -15,12 +16,14 @@ painel.get('/meses', (_req, res) => {
     ? intervalo(ordenados[0], ordenados[ordenados.length - 1])
     : ordenados;
   res.json({ atual: hoje, meses: completos, com_dados: existentes });
+  } catch (erro) { next(erro); }
 });
 
-painel.get('/resumo', (req, res) => {
+painel.get('/resumo', async (req, res, next) => {
+  try {
   const mes = ehMes(req.query.mes) ? req.query.mes : mesAtual();
-  const resumo = resumoDoMes(mes);
-  const anterior = resumoDoMes(somarMeses(mes, -1));
+  const resumo = await resumoDoMes(mes);
+  const anterior = await resumoDoMes(somarMeses(mes, -1));
   res.json({
     ...resumo,
     comparativo: {
@@ -33,36 +36,43 @@ painel.get('/resumo', (req, res) => {
         : null,
     },
   });
+  } catch (erro) { next(erro); }
 });
 
-painel.get('/projecao', (req, res) => {
+painel.get('/projecao', async (req, res, next) => {
+  try {
   const mes = ehMes(req.query.mes) ? req.query.mes : mesAtual();
   const meses = Math.min(Math.max(Number(req.query.meses) || 6, 1), 24);
-  res.json({ mes, meses, linhas: projecao(mes, meses) });
+  res.json({ mes, meses, linhas: await projecao(mes, meses) });
+  } catch (erro) { next(erro); }
 });
 
-painel.get('/mes/:mes', (req, res) => {
+painel.get('/mes/:mes', async (req, res, next) => {
+  try {
   const { mes } = req.params;
   if (!ehMes(mes)) return res.status(400).json({ erro: 'Mês inválido. Use o formato AAAA-MM.' });
   return res.json({
-    resumo: resumoDoMes(mes),
-    contas: contasDoMes(mes),
-    receitas: receitasDoMes(mes),
+    resumo: await resumoDoMes(mes),
+    contas: await contasDoMes(mes),
+    receitas: await receitasDoMes(mes),
   });
+  } catch (erro) { return next(erro); }
 });
 
 /** Números globais para a tela de configurações / diagnóstico. */
-painel.get('/estatisticas', (_req, res) => {
-  const contar = (t) => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n;
+painel.get('/estatisticas', async (_req, res, next) => {
+  try {
+  const contar = async (t) => (await db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()).n;
   res.json({
-    cartoes: contar('cartoes'),
-    contas_bancarias: contar('contas_bancarias'),
-    categorias: contar('categorias'),
-    pessoas: contar('pessoas'),
-    lancamentos: contar('lancamentos'),
-    parcelamentos: contar('parcelamentos'),
-    contas: contar('contas'),
-    receitas: contar('receitas'),
-    meses: mesesComDados().length,
+    cartoes: await contar('cartoes'),
+    contas_bancarias: await contar('contas_bancarias'),
+    categorias: await contar('categorias'),
+    pessoas: await contar('pessoas'),
+    lancamentos: await contar('lancamentos'),
+    parcelamentos: await contar('parcelamentos'),
+    contas: await contar('contas'),
+    receitas: await contar('receitas'),
+    meses: (await mesesComDados()).length,
   });
+  } catch (erro) { next(erro); }
 });

@@ -1,42 +1,99 @@
 # FinTrack
 
 Controle de gastos pessoais que roda inteiro na sua máquina: React no navegador,
-API em Node e um banco **SQLite** em arquivo. Nada vai para a nuvem, nada precisa
-de servidor instalado.
+API em Node e **PostgreSQL** em container. Nada vai para a nuvem.
 
 Nasceu da `Planilha 2026.xlsx` — e sabe importá-la.
 
 ## Começando
+
+Tudo em container, do banco à interface:
+
+```bash
+docker compose up -d --build
+```
+
+O app fica em <http://localhost:3333>, com a interface já construída dentro da
+imagem. O banco sobe junto, com os dados num volume, e o app espera ele aceitar
+conexão antes de começar a atender.
+
+Para desenvolver, com recarga automática, deixe só o banco no container:
+
+```bash
+docker compose up -d banco
+```
 
 ```bash
 npm run setup
 ```
 
 ```bash
-npm run importar -- "Planilha 2026.xlsx"
-```
-
-```bash
 npm run dev
 ```
 
-A interface abre em <http://localhost:5173> e a API sobe em
-<http://localhost:3333>. O banco é criado sozinho em `data/fintrack.db` (bancos
-antigos, de quando o projeto se chamava AppGastos, continuam sendo usados de onde
-estão).
+Aí a interface abre em <http://localhost:5173> e a API em
+<http://localhost:3333>. O esquema é criado sozinho na primeira subida.
 
-A importação é opcional: sem ela o app começa vazio, com um conjunto inicial de
-categorias. Ela também pode ser feita pela tela **Importar gastos**.
+A importação da planilha é opcional — sem ela o app começa vazio, com um conjunto
+inicial de categorias:
+
+```bash
+npm run importar -- "Planilha 2026.xlsx"
+```
+
+### Configuração
+
+Todas as variáveis têm padrão, então o `docker compose up` funciona sem nenhum
+arquivo. Para mudar senha ou portas:
+
+```bash
+cp .env.example .env
+```
+
+Rodando o app fora do container, o endereço do banco vem de `DATABASE_URL` (ou
+das variáveis `PGHOST`, `PGUSER` e companhia). O padrão aponta para o container.
 
 ### Outros comandos
 
 | Comando | O que faz |
 |---|---|
 | `npm run build` | Gera o front em `client/dist` |
-| `npm start` | Sobe tudo numa porta só (API + interface já construída) |
+| `npm start` | Sobe a API servindo também a interface já construída |
+| `npm run migrar:sqlite` | Prévia da migração do banco SQLite antigo |
+| `npm run migrar:sqlite -- --sim` | Migra os dados do SQLite para o Postgres |
 | `npm run importar -- "arquivo.xlsx"` | Importa uma planilha (substitui os lançamentos) |
 | `npm run importar -- "outra.xlsx" --somar` | Importa somando aos dados existentes |
-| `npm run reset -- --sim` | Apaga o banco e recomeça do zero |
+| `npm run reset -- --sim` | Esvazia o banco e recria o esquema |
+| `npm run docker:subir` / `docker:parar` | Atalhos do compose |
+
+## Vindo do SQLite
+
+O app usava um arquivo SQLite. Quem já tem dados lá migra assim, com o banco no
+ar:
+
+```bash
+npm run migrar:sqlite -- --sim
+```
+
+O script acha o `data/appgastos.db` (ou `data/fintrack.db`) sozinho; para apontar
+outro, use `SQLITE_DB=/caminho/do.db`. Sem `--sim` ele só conta o que existe e
+não grava nada.
+
+Três coisas que ele faz de propósito:
+
+- **preserva os ids.** As tabelas se referenciam por id, e renumerar exigiria
+  reescrever cada chave estrangeira. É por isso que as colunas `id` são
+  `IDENTITY BY DEFAULT`, e não `ALWAYS`: elas aceitam o id que vem escrito.
+- **respeita a ordem das chaves.** Cartão antes de lançamento, conta bancária
+  antes de conta — senão a referência aponta para o que ainda não existe.
+- **realinha as sequences no fim.** Inserir id explícito não move o contador do
+  Postgres; sem esse passo, o primeiro cadastro feito pela tela tentaria o id 1
+  e esbarraria num que já existe.
+
+O arquivo SQLite não é alterado: continua ali, intacto, como backup. O
+`better-sqlite3` ficou como dependência de desenvolvimento só por causa deste
+script — ele não vai para a imagem, o que evita carregar um compilador C++ no
+container por causa de um arquivo que nunca mais será lido.
 
 ## A ideia central: vigência, não repetição
 
@@ -354,7 +411,7 @@ confirmar quantos registros e quanto valor saem de cada tipo.
 O parcelamento é uma linha só que atravessa vários meses, então apagá-lo por
 causa de agosto tira também as parcelas de setembro em diante — a tela avisa
 quando é o caso, e a opção **"só gastos avulsos"** o preserva.
-Antes de apagar, uma cópia do banco é gravada em `data/backup-<data>.db`.
+Antes de apagar, o que sai é guardado em `data/backup-<data>.json`.
 
 O mesmo recorte existe no terminal, com prévia antes de confirmar:
 
@@ -377,7 +434,7 @@ continuar visível nos dois temas (`corDeMarca`, em `client/src/CartaoVisual.jsx
 receitas**. Os dois abrem a mesma tela, porque os dois cadastros têm a mesma
 forma e o mesmo risco — e repetem o desenho da limpeza de cartão: a prévia vem
 do servidor a cada mudança de recorte e é ela, não o texto do botão, que diz o
-que vai sumir; uma cópia do banco é gravada em `data/` antes de apagar.
+que vai sumir; o que sai é guardado em `data/` antes de apagar.
 
 O recorte tem três eixos, combináveis:
 
@@ -417,7 +474,8 @@ mostrando o valor real que o banco vai cobrar.
 
 ```
 server/
-  db/schema.sql            esquema do SQLite
+  db/schema.sql            esquema do Postgres
+  db/index.js              pool, tradução de parâmetros, migração
   lib/                     crud genérico, aritmética de competências
   services/mes.js          expande as parcelas do mês e consolida o total
   services/importador.js   leitura da planilha
@@ -428,8 +486,23 @@ server/
 client/src/
   paginas/               uma tela por arquivo
   componentes.jsx        modal, tabela, barras, avisos, hooks de CRUD
-data/fintrack.db         seu banco (não versionar)
+data/                    backups das limpezas (não versionar)
+Dockerfile               imagem do app (build do client + API)
+docker-compose.yml       Postgres + app
 ```
+
+## O backup das limpezas
+
+Toda limpeza guarda antes o que vai apagar, e isso mudou de forma na migração.
+No SQLite era um `VACUUM INTO`: uma cópia do arquivo inteiro do banco, barata
+porque o banco *era* um arquivo. O Postgres não tem equivalente que o app possa
+chamar sozinho — o `pg_dump` é um binário externo, que pode não existir na
+máquina nem na imagem.
+
+A troca acabou servindo melhor ao propósito. Ninguém restaura um banco inteiro
+por causa de três contas apagadas por engano; quer as três linhas de volta. O
+arquivo agora é um JSON com cada registro removido e todas as suas colunas,
+pronto para reinserir.
 
 ## Sobre a importação da Planilha 2026
 

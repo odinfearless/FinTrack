@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import xlsx from 'xlsx';
-import { db } from '../db/index.js';
+import { transacao } from '../db/index.js';
 import { mesDeNome, somarMeses, diferencaMeses } from '../lib/mes.js';
 
 /**
@@ -188,7 +188,7 @@ const SEM_DESCRICAO = '(sem descrição)';
  * Importa uma planilha, vinda da pasta do projeto (`arquivo`) ou enviada pela
  * tela (`conteudo` + `nome`). O resto do processo é o mesmo nos dois casos.
  */
-export function importarPlanilha({ arquivo, conteudo, nome, ano, substituir = true } = {}) {
+export async function importarPlanilha({ arquivo, conteudo, nome, ano, substituir = true } = {}) {
   if (!conteudo && !fs.existsSync(arquivo)) {
     const erro = new Error(`Planilha não encontrada em ${arquivo}`);
     erro.status = 404;
@@ -230,58 +230,75 @@ export function importarPlanilha({ arquivo, conteudo, nome, ano, substituir = tr
     avisos: [],
   };
 
-  const executar = db.transaction(() => {
+  // A transação inteira roda numa conexão só, e é por `tx` que tudo passa lá
+  // dentro: usar o `db` global aqui pegaria outra conexão do pool, fora da
+  // transação, e essas escritas escapariam do COMMIT.
+  await transacao(async (tx) => {
     if (substituir) {
       for (const t of ['lancamentos', 'parcelamentos', 'contas', 'receitas', 'encargos']) {
-        db.prepare(`DELETE FROM ${t}`).run();
+        await tx.prepare(`DELETE FROM ${t}`).run();
       }
     }
 
     // ---- cadastros básicos -------------------------------------------------
-    const acharCategoria = db.prepare('SELECT id, nome FROM categorias');
-    const cacheCategorias = new Map(acharCategoria.all().map((c) => [normalizar(c.nome), c.id]));
-    const insCategoria = db.prepare('INSERT INTO categorias (nome) VALUES (?)');
+    const cacheCategorias = new Map(
+      (await tx.prepare('SELECT id, nome FROM categorias').all()).map((c) => [normalizar(c.nome), c.id]),
+    );
+    // `RETURNING id` no lugar do `lastInsertRowid`: o Postgres devolve a linha
+    // criada na própria instrução.
+    const insCategoria = tx.prepare('INSERT INTO categorias (nome) VALUES (?) RETURNING id');
     /** Cria a categoria se ela ainda não existir. Só para o bloco de categorias. */
-    const idCategoria = (nome) => {
+    const idCategoria = async (nome) => {
       const chave = normalizar(nome);
       if (!chave) return null;
       if (cacheCategorias.has(chave)) return cacheCategorias.get(chave);
-      const id = Number(insCategoria.run(String(nome).trim()).lastInsertRowid);
-      cacheCategorias.set(chave, id);
+      const { linha } = await insCategoria.run(String(nome).trim());
+      cacheCategorias.set(chave, linha.id);
       relatorio.criados.categorias += 1;
-      return id;
+      return linha.id;
     };
-    for (const aba of abas) aba.dados.categorias.forEach((c) => idCategoria(c));
+    // `for..of` no lugar do `forEach`: o callback do forEach é uma função à
+    // parte, e o `await` lá dentro não seguraria este laço — as categorias
+    // seriam criadas fora de ordem e depois do resto da importação.
+    for (const aba of abas) {
+      for (const c of aba.dados.categorias) await idCategoria(c);
+    }
 
     // Para as despesas a descrição só *classifica*: se ela bate com uma
     // categoria existente o vínculo é feito, senão fica sem categoria. Criar
     // categoria a partir de descrição transformaria cada compra numa categoria.
     const classificar = (descricao) => cacheCategorias.get(normalizar(descricao)) ?? null;
 
-    const cacheCartoes = new Map(db.prepare('SELECT id, nome FROM cartoes').all().map((c) => [normalizar(c.nome), c.id]));
+    const cacheCartoes = new Map(
+      (await tx.prepare('SELECT id, nome FROM cartoes').all()).map((c) => [normalizar(c.nome), c.id]),
+    );
     const cores = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4'];
-    const insCartao = db.prepare('INSERT INTO cartoes (nome, cor) VALUES (?, ?)');
-    const idCartao = (nome) => {
+    const insCartao = tx.prepare('INSERT INTO cartoes (nome, cor) VALUES (?, ?) RETURNING id');
+    const idCartao = async (nome) => {
       const chave = normalizar(nome);
       if (cacheCartoes.has(chave)) return cacheCartoes.get(chave);
-      const id = Number(insCartao.run(String(nome).trim(), cores[cacheCartoes.size % cores.length]).lastInsertRowid);
-      cacheCartoes.set(chave, id);
+      const { linha } = await insCartao.run(String(nome).trim(), cores[cacheCartoes.size % cores.length]);
+      cacheCartoes.set(chave, linha.id);
       relatorio.criados.cartoes += 1;
-      return id;
+      return linha.id;
     };
 
-    const cachePessoas = new Map(db.prepare('SELECT id, nome FROM pessoas').all().map((p) => [normalizar(p.nome), p.id]));
-    const insPessoa = db.prepare('INSERT INTO pessoas (nome, reembolsa) VALUES (?, 1)');
-    const idPessoa = (nome) => {
+    const cachePessoas = new Map(
+      (await tx.prepare('SELECT id, nome FROM pessoas').all()).map((p) => [normalizar(p.nome), p.id]),
+    );
+    const insPessoa = tx.prepare('INSERT INTO pessoas (nome, reembolsa) VALUES (?, 1) RETURNING id');
+    const idPessoa = async (nome) => {
       const chave = normalizar(nome);
       if (!chave) return null;
       if (cachePessoas.has(chave)) return cachePessoas.get(chave);
-      const id = Number(insPessoa.run(String(nome).trim()).lastInsertRowid);
-      cachePessoas.set(chave, id);
+      const { linha } = await insPessoa.run(String(nome).trim());
+      cachePessoas.set(chave, linha.id);
       relatorio.criados.pessoas += 1;
-      return id;
+      return linha.id;
     };
-    for (const aba of abas) aba.dados.pessoas.forEach((p) => idPessoa(p));
+    for (const aba of abas) {
+      for (const p of aba.dados.pessoas) await idPessoa(p);
+    }
 
     // Uma linha de renda com nome de pessoa é o SUMIF de reembolso da planilha;
     // o app recalcula isso sozinho, então essas linhas não viram receita.
@@ -297,17 +314,17 @@ export function importarPlanilha({ arquivo, conteudo, nome, ano, substituir = tr
       mapa.get(chave).meses.add(mes);
     };
 
-    const insLancamento = db.prepare(`
+    const insLancamento = tx.prepare(`
       INSERT INTO lancamentos (mes, data, cartao_id, categoria_id, pessoa_id, descricao, valor)
       VALUES (@mes, @data, @cartao_id, @categoria_id, @pessoa_id, @descricao, @valor)`);
-    const insEncargo = db.prepare(`
+    const insEncargo = tx.prepare(`
       INSERT INTO encargos (mes, cartao_id, valor) VALUES (?, ?, ?)
       ON CONFLICT (mes, cartao_id) DO UPDATE SET valor = excluded.valor`);
 
     for (const { mes, dados } of abas) {
       for (const e of dados.encargos) {
         if (!e.valor) continue;
-        insEncargo.run(mes, idCartao(e.cartao), e.valor);
+        await insEncargo.run(mes, await idCartao(e.cartao), e.valor);
         relatorio.criados.encargos += 1;
       }
 
@@ -323,8 +340,8 @@ export function importarPlanilha({ arquivo, conteudo, nome, ano, substituir = tr
       }
 
       for (const d of dados.despesas) {
-        const cartaoId = idCartao(d.cartao);
-        const pessoaId = d.pessoa ? idPessoa(d.pessoa) : null;
+        const cartaoId = await idCartao(d.cartao);
+        const pessoaId = d.pessoa ? await idPessoa(d.pessoa) : null;
         const categoriaId = classificar(d.descricao);
         const descricao = d.descricao || SEM_DESCRICAO;
 
@@ -363,7 +380,7 @@ export function importarPlanilha({ arquivo, conteudo, nome, ano, substituir = tr
           continue;
         }
 
-        insLancamento.run({
+        await insLancamento.run({
           mes,
           data: d.data || null,
           cartao_id: cartaoId,
@@ -386,36 +403,36 @@ export function importarPlanilha({ arquivo, conteudo, nome, ano, substituir = tr
       faixa.fim === ultimoMes && diferencaMeses(faixa.inicio, faixa.fim) >= 1 ? null : faixa.fim
     );
 
-    const insConta = db.prepare(`
+    const insConta = tx.prepare(`
       INSERT INTO contas (descricao, valor, forma, mes_inicio, mes_fim)
       VALUES (@descricao, @valor, @forma, @mes_inicio, @mes_fim)`);
     for (const item of contas.values()) {
       for (const faixa of comprimirVigencias(item.meses)) {
-        insConta.run({ ...item, mes_inicio: faixa.inicio, mes_fim: fimOuAberto(faixa) });
+        await insConta.run({ ...item, mes_inicio: faixa.inicio, mes_fim: fimOuAberto(faixa) });
         relatorio.criados.contas += 1;
       }
     }
 
-    const insReceita = db.prepare(`
+    const insReceita = tx.prepare(`
       INSERT INTO receitas (descricao, valor, tipo, mes_inicio, mes_fim)
       VALUES (@descricao, @valor, @tipo, @mes_inicio, @mes_fim)`);
     for (const item of receitas.values()) {
       for (const faixa of comprimirVigencias(item.meses)) {
-        insReceita.run({ ...item, mes_inicio: faixa.inicio, mes_fim: fimOuAberto(faixa) });
+        await insReceita.run({ ...item, mes_inicio: faixa.inicio, mes_fim: fimOuAberto(faixa) });
         relatorio.criados.receitas += 1;
       }
     }
 
-    const insParcelamento = db.prepare(`
+    const insParcelamento = tx.prepare(`
       INSERT INTO parcelamentos (cartao_id, categoria_id, pessoa_id, descricao, valor_parcela, parcelas, mes_inicio, data_compra)
       VALUES (@cartao_id, @categoria_id, @pessoa_id, @descricao, @valor_parcela, @parcelas, @mes_inicio, @data_compra)`);
     for (const { grupo, ...item } of parcelas.values()) {
-      insParcelamento.run(item);
+      await insParcelamento.run(item);
       relatorio.criados.parcelamentos += 1;
     }
 
-    const semDescricao = db.prepare(
-      'SELECT COUNT(*) AS n FROM lancamentos WHERE descricao = ?').get(SEM_DESCRICAO).n;
+    const { n: semDescricao } = await tx.prepare(
+      'SELECT COUNT(*) AS n FROM lancamentos WHERE descricao = ?').get(SEM_DESCRICAO);
     if (semDescricao > 0) {
       relatorio.avisos.push(
         `${semDescricao} lançamentos vieram sem descrição na planilha e ficaram como "${SEM_DESCRICAO}". `
@@ -424,6 +441,5 @@ export function importarPlanilha({ arquivo, conteudo, nome, ano, substituir = tr
     }
   });
 
-  executar();
   return relatorio;
 }

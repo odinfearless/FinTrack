@@ -10,8 +10,9 @@
  * limpeza levantasse a sua e apagasse por outra consulta, a tela poderia
  * prometer três registros e o banco levar trinta.
  */
+import fs from 'node:fs';
 import path from 'node:path';
-import { db, arquivoBanco } from '../db/index.js';
+import { db, transacao, pastaDados } from '../db/index.js';
 
 const arred = (n) => Math.round(n * 100) / 100;
 const somar = (linhas) => arred(linhas.reduce((t, l) => t + (l.valor || 0), 0));
@@ -30,25 +31,51 @@ export function resumirLimpeza(alvo) {
 }
 
 /**
- * Apaga o recorte. Antes de mexer, grava uma cópia do banco em `data/` — é o
- * mesmo seguro que o script de linha de comando dá, e aqui vale mais ainda,
- * porque um clique é bem mais fácil de dar do que um comando com `--sim`.
+ * Guarda o que vai ser apagado, em JSON, dentro de `data/`.
+ *
+ * No SQLite isto era um `VACUUM INTO`: uma cópia do arquivo inteiro do banco,
+ * barata porque o banco era um arquivo. O Postgres não tem equivalente que o
+ * app possa chamar sozinho — o `pg_dump` é um binário externo, que pode não
+ * existir na máquina nem na imagem.
+ *
+ * A troca acabou sendo melhor para o que o backup serve. Ninguém restaura um
+ * banco inteiro por causa de três contas apagadas por engano; quer as três
+ * linhas de volta. O arquivo traz cada registro removido com todas as colunas,
+ * pronto para reinserir.
  */
-export function executarLimpeza(alvo) {
+async function guardarCopia(alvo) {
+  const registros = {};
+  for (const [tabela, linhas] of Object.entries(alvo)) {
+    if (linhas.length === 0) continue;
+    const ids = linhas.map((l) => l.id);
+    registros[tabela] = await db.prepare(`SELECT * FROM ${tabela} WHERE id = ANY(?)`).all([ids]);
+  }
+
+  const carimbo = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const destino = path.join(pastaDados, `backup-${carimbo}.json`);
+  fs.writeFileSync(destino, JSON.stringify({ removido_em: new Date().toISOString(), registros }, null, 2));
+  return destino;
+}
+
+/**
+ * Apaga o recorte. Antes de mexer, guarda o que sai — é o mesmo seguro que o
+ * script de linha de comando dá, e aqui vale mais ainda, porque um clique é bem
+ * mais fácil de dar do que um comando com `--sim`.
+ */
+export async function executarLimpeza(alvo) {
   const resumo = resumirLimpeza(alvo);
   if (resumo.quantidade === 0) return { ...resumo, backup: null };
 
-  const carimbo = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const backup = path.join(path.dirname(arquivoBanco), `backup-${carimbo}.db`);
-  db.prepare('VACUUM INTO ?').run(backup);
+  const backup = await guardarCopia(alvo);
 
-  db.transaction(() => {
+  await transacao(async (tx) => {
     for (const [tabela, linhas] of Object.entries(alvo)) {
       if (linhas.length === 0) continue;
-      const stmt = db.prepare(`DELETE FROM ${tabela} WHERE id = ?`);
-      linhas.forEach((l) => stmt.run(l.id));
+      // Um DELETE por tabela, com a lista inteira: o Postgres cobra uma ida ao
+      // banco por instrução, e um DELETE por linha faria centenas delas.
+      await tx.prepare(`DELETE FROM ${tabela} WHERE id = ANY(?)`).run([linhas.map((l) => l.id)]);
     }
-  })();
+  });
 
   return { ...resumo, backup };
 }

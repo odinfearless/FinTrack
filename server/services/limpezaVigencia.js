@@ -27,7 +27,7 @@ const TABELAS = new Set(['contas', 'receitas']);
  * Sem `mes`, é tudo o que está cadastrado. Com `mes`, o que está vigente nele;
  * e com `soDoMes`, apenas o que começa e termina ali.
  */
-export function levantarLimpezaVigencia(tabela, { mes = null, soDoMes = false, contaBancariaId = null } = {}) {
+export async function levantarLimpezaVigencia(tabela, { mes = null, soDoMes = false, contaBancariaId = null } = {}) {
   if (!TABELAS.has(tabela)) throw new Error(`Tabela sem limpeza por vigência: ${tabela}`);
 
   const filtros = [];
@@ -52,6 +52,6 @@ export function levantarLimpezaVigencia(tabela, { mes = null, soDoMes = false, c
 
   const onde = filtros.length > 0 ? `WHERE ${filtros.join(' AND ')}` : '';
   return {
-    [tabela]: db.prepare(`SELECT id, valor FROM ${tabela} ${onde} ORDER BY valor DESC`).all(...valores),
+    [tabela]: await db.prepare(`SELECT id, valor FROM ${tabela} ${onde} ORDER BY valor DESC`).all(...valores),
   };
 }

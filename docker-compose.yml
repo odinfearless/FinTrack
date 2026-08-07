@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# FinTrack — Postgres + app.
+#
+#   docker compose up -d --build     sobe os dois
+#   docker compose up -d banco       só o banco, para rodar o app na máquina
+#
+# O segundo caso é o do dia a dia de desenvolvimento: o `npm run dev` continua
+# valendo, com recarga automática, e o banco fica no container.
+# ---------------------------------------------------------------------------
+
+services:
+  banco:
+    image: postgres:17-alpine
+    container_name: fintrack-banco
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fintrack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fintrack}
+      POSTGRES_DB: ${POSTGRES_DB:-fintrack}
+      # O banco guarda datas e textos em português; o locale evita que a
+      # ordenação de nome saia com acento fora de lugar.
+      LANG: pt_BR.utf8
+    ports:
+      # Publicado para o `npm run dev` da máquina alcançar o banco. Em outra
+      # máquina que não a sua, prefira remover esta linha: o app do compose
+      # fala com o banco pela rede interna e não precisa da porta aberta.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - dados-postgres:/var/lib/postgresql/data
+    healthcheck:
+      # É o que segura o app até o banco aceitar conexão de verdade. Sem isso,
+      # `depends_on` só garante que o container iniciou — e o Postgres sobe,
+      # reinicia uma vez durante a criação do cluster, e só então atende.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fintrack} -d ${POSTGRES_DB:-fintrack}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  app:
+    build: .
+    container_name: fintrack-app
+    restart: unless-stopped
+    depends_on:
+      banco:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3333
+      # `banco` é o nome do serviço, que no compose já é o nome de rede.
+      DATABASE_URL: postgres://${POSTGRES_USER:-fintrack}:${POSTGRES_PASSWORD:-fintrack}@banco:5432/${POSTGRES_DB:-fintrack}
+    ports:
+      - "${APP_PORT:-3333}:3333"
+    volumes:
+      # Os backups das limpezas são arquivos, e precisam sobreviver ao
+      # container: sem este mapeamento, o que a tela promete guardar sumiria
+      # no primeiro `docker compose down`.
+      - ./data:/app/data
+
+volumes:
+  dados-postgres:
