@@ -2,7 +2,9 @@ import { Router } from 'express';
 import { db } from '../db/index.js';
 import { criarCrud, tipos, ErroValidacao } from '../lib/crud.js';
 import { despesasDoMes } from '../services/mes.js';
-import { mesAtual, somarMeses } from '../lib/mes.js';
+import { levantarLimpezaVigencia } from '../services/limpezaVigencia.js';
+import { resumirLimpeza, executarLimpeza } from '../services/limpeza.js';
+import { ehMes, mesAtual, somarMeses } from '../lib/mes.js';
 
 const referencias = {
   cartao_id: tipos.inteiro({ obrigatorio: true, rotulo: 'Cartão' }),
@@ -20,6 +22,7 @@ export const lancamentos = criarCrud({
     mes: tipos.mes({ obrigatorio: true, rotulo: 'Mês' }),
     data: tipos.data({}),
     cartao_id: tipos.inteiro({}),
+    conta_bancaria_id: tipos.inteiro({}),
     forma: tipos.texto({}),
     categoria_id: tipos.inteiro({}),
     pessoa_id: tipos.inteiro({}),
@@ -40,11 +43,13 @@ export const lancamentos = criarCrud({
     else if ('forma' in dados || !atual) dados.cartao_id = null;
   },
   listar: ({ mes }) => db.prepare(`
-    SELECT l.*, c.nome AS cartao, c.cor AS cartao_cor, cat.nome AS categoria, p.nome AS pessoa
+    SELECT l.*, c.nome AS cartao, c.cor AS cartao_cor, cat.nome AS categoria, p.nome AS pessoa,
+           cb.nome AS conta_bancaria
     FROM lancamentos l
-    LEFT JOIN cartoes    c   ON c.id   = l.cartao_id
-    LEFT JOIN categorias cat ON cat.id = l.categoria_id
-    LEFT JOIN pessoas    p   ON p.id   = l.pessoa_id
+    LEFT JOIN cartoes          c   ON c.id  = l.cartao_id
+    LEFT JOIN categorias       cat ON cat.id = l.categoria_id
+    LEFT JOIN pessoas          p   ON p.id  = l.pessoa_id
+    LEFT JOIN contas_bancarias cb  ON cb.id = l.conta_bancaria_id
     ${mes ? 'WHERE l.mes = ?' : ''}
     ORDER BY l.mes DESC, l.valor DESC`).all(...(mes ? [mes] : [])),
 });
@@ -81,13 +86,15 @@ export const contas = criarCrud({
     valor: tipos.numero({ obrigatorio: true, rotulo: 'Valor' }),
     forma: tipos.texto({ padrao: 'D.AUTO' }),
     categoria_id: tipos.inteiro({}),
+    conta_bancaria_id: tipos.inteiro({}),
     dia_vencimento: tipos.inteiro({ min: 1 }),
     mes_inicio: tipos.mes({ obrigatorio: true, rotulo: 'Início' }),
     mes_fim: tipos.mes({}),
   },
   listar: () => db.prepare(`
-    SELECT c.*, cat.nome AS categoria FROM contas c
-    LEFT JOIN categorias cat ON cat.id = c.categoria_id
+    SELECT c.*, cat.nome AS categoria, cb.nome AS conta_bancaria FROM contas c
+    LEFT JOIN categorias       cat ON cat.id = c.categoria_id
+    LEFT JOIN contas_bancarias cb  ON cb.id  = c.conta_bancaria_id
     ORDER BY (c.mes_fim IS NOT NULL), c.valor DESC`).all(),
 });
 
@@ -98,10 +105,58 @@ export const receitas = criarCrud({
     descricao: tipos.texto({ obrigatorio: true, rotulo: 'Descrição' }),
     valor: tipos.numero({ obrigatorio: true, rotulo: 'Valor' }),
     tipo: tipos.texto({ padrao: 'fixa' }),
+    conta_bancaria_id: tipos.inteiro({}),
     mes_inicio: tipos.mes({ obrigatorio: true, rotulo: 'Início' }),
     mes_fim: tipos.mes({}),
   },
+  listar: () => db.prepare(`
+    SELECT r.*, cb.nome AS conta_bancaria FROM receitas r
+    LEFT JOIN contas_bancarias cb ON cb.id = r.conta_bancaria_id
+    ORDER BY r.valor DESC`).all(),
 });
+
+/**
+ * Limpeza de contas e de receitas.
+ *
+ * Mora num roteador próprio, e não em `/api/contas`, porque o CRUD daquele
+ * recurso já registrou `/:id`: um `/contas/limpeza` cairia ali dentro, com
+ * "limpeza" no lugar do id, e a rota nunca seria alcançada.
+ *
+ * O GET devolve a prévia que o usuário confere e o POST apaga exatamente
+ * aquilo — os dois levantam o recorte pela mesma função.
+ */
+export const limpeza = Router();
+
+function recorteDeVigencia(req) {
+  const bruto = { ...req.query, ...(req.body || {}) };
+  const mes = bruto.mes ?? null;
+
+  if (mes && !ehMes(mes)) throw new ErroValidacao('Mês inválido. Use o formato AAAA-MM.');
+
+  const ligado = (v) => v === true || v === 1 || v === '1' || v === 'true';
+  const conta = Number(bruto.conta_bancaria_id);
+
+  return {
+    mes: mes || null,
+    soDoMes: ligado(bruto.so_do_mes),
+    contaBancariaId: Number.isFinite(conta) && conta > 0 ? conta : null,
+  };
+}
+
+// Contas e receitas se apagam pelo mesmo recorte, então ganham o mesmo par de
+// rotas. Escrever os dois handlers à mão só criaria a chance de a prévia e o
+// DELETE divergirem em um dos recursos.
+for (const tabela of ['contas', 'receitas']) {
+  limpeza.get(`/${tabela}`, (req, res) => {
+    const recorte = recorteDeVigencia(req);
+    res.json({ ...recorte, ...resumirLimpeza(levantarLimpezaVigencia(tabela, recorte)) });
+  });
+
+  limpeza.post(`/${tabela}`, (req, res) => {
+    const recorte = recorteDeVigencia(req);
+    res.json({ ...recorte, ...executarLimpeza(levantarLimpezaVigencia(tabela, recorte)) });
+  });
+}
 
 /** Consulta unificada das despesas de cartão já expandidas para o mês. */
 export const despesas = Router();

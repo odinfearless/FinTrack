@@ -4,13 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { migrar, semear, arquivoBanco } from './db/index.js';
 import { pastaCliente } from './lib/caminhos.js';
-import { cartoes, categorias, pessoas, encargos } from './routes/cadastros.js';
 import {
-  lancamentos, parcelamentos, contas, receitas, despesas,
+  cartoes, categorias, pessoas, encargos, contasBancarias,
+} from './routes/cadastros.js';
+import {
+  lancamentos, parcelamentos, contas, receitas, despesas, limpeza,
 } from './routes/despesas.js';
 import { painel } from './routes/painel.js';
 import { importacao } from './routes/importacao.js';
 import { fatura } from './routes/fatura.js';
+import { extrato } from './routes/extrato.js';
 
 migrar();
 const semeou = semear();
@@ -20,6 +23,7 @@ app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
 app.use('/api/cartoes', cartoes);
+app.use('/api/contas-bancarias', contasBancarias);
 app.use('/api/categorias', categorias);
 app.use('/api/pessoas', pessoas);
 app.use('/api/encargos', encargos);
@@ -28,8 +32,10 @@ app.use('/api/parcelamentos', parcelamentos);
 app.use('/api/contas', contas);
 app.use('/api/receitas', receitas);
 app.use('/api/despesas', despesas);
+app.use('/api/limpeza', limpeza);
 app.use('/api/importacao', importacao);
 app.use('/api/fatura', fatura);
+app.use('/api/extrato', extrato);
 app.use('/api', painel);
 
 app.get('/api/saude', (_req, res) => res.json({ ok: true, banco: arquivoBanco }));

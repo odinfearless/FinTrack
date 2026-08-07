@@ -63,6 +63,35 @@ cartoes.post('/:id/limpeza', (req, res) => {
   res.json({ cartao, ...recorte, ...executarLimpeza(levantarLimpeza(cartao.id, recorte)) });
 });
 
+/**
+ * Conta corrente. Saldo e limites são a última foto lida do extrato, e não uma
+ * série: quem quiser o histórico olha os lançamentos, que estão todos lá.
+ */
+export const contasBancarias = criarCrud({
+  tabela: 'contas_bancarias',
+  ordem: 'ativo DESC, nome',
+  campos: {
+    nome: tipos.texto({ obrigatorio: true, rotulo: 'Nome' }),
+    banco: tipos.texto({}),
+    agencia: tipos.texto({}),
+    numero: tipos.texto({}),
+    cor: tipos.texto({ padrao: '#f07c00' }),
+    // Sem piso: conta no vermelho tem saldo negativo, e é justamente ela que
+    // mais precisa aparecer no app.
+    saldo: tipos.numero({}),
+    limite_total: tipos.numero({ min: 0 }),
+    limite_usado: tipos.numero({ min: 0 }),
+    saldo_em: tipos.data({}),
+    ativo: tipos.booleano({ padrao: 1 }),
+  },
+  listar: () => db.prepare(`
+    SELECT cb.*,
+           (SELECT COUNT(*) FROM lancamentos WHERE conta_bancaria_id = cb.id) AS qtd_lancamentos,
+           (SELECT COUNT(*) FROM contas      WHERE conta_bancaria_id = cb.id) AS qtd_contas,
+           (SELECT COUNT(*) FROM receitas    WHERE conta_bancaria_id = cb.id) AS qtd_receitas
+    FROM contas_bancarias cb ORDER BY cb.ativo DESC, cb.nome`).all(),
+});
+
 export const categorias = criarCrud({
   tabela: 'categorias',
   ordem: 'nome',

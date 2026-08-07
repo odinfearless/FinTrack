@@ -56,6 +56,7 @@ painel.get('/estatisticas', (_req, res) => {
   const contar = (t) => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n;
   res.json({
     cartoes: contar('cartoes'),
+    contas_bancarias: contar('contas_bancarias'),
     categorias: contar('categorias'),
     pessoas: contar('pessoas'),
     lancamentos: contar('lancamentos'),

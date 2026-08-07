@@ -8,12 +8,14 @@
  * atravessa vários meses: apagar por causa de agosto tira também as parcelas de
  * setembro em diante. Quem quiser evitar isso passa `soAvulsos`.
  */
-import path from 'node:path';
-import { db, arquivoBanco } from '../db/index.js';
+import { db } from '../db/index.js';
 import { diferencaMeses } from '../lib/mes.js';
 
+// Resumir e apagar valem para qualquer recorte e vivem em `limpeza.js`. Saem
+// daqui também para quem já importava deste arquivo não precisar mudar.
+export { resumirLimpeza, executarLimpeza } from './limpeza.js';
+
 const arred = (n) => Math.round(n * 100) / 100;
-const somar = (linhas) => arred(linhas.reduce((t, l) => t + (l.valor || 0), 0));
 
 /** Um parcelamento entra no recorte do mês se alguma parcela cair nele. */
 function parcelamentosNoMes(cartaoId, mes) {
@@ -49,39 +51,3 @@ export function levantarLimpeza(cartaoId, { mes = null, soAvulsos = false } = {}
   };
 }
 
-/** Contagem e soma por tabela, no formato que a tela mostra antes de confirmar. */
-export function resumirLimpeza(alvo) {
-  const itens = {};
-  for (const [tabela, linhas] of Object.entries(alvo)) {
-    itens[tabela] = { quantidade: linhas.length, total: somar(linhas) };
-  }
-  return {
-    itens,
-    quantidade: Object.values(itens).reduce((t, i) => t + i.quantidade, 0),
-    total: arred(Object.values(itens).reduce((t, i) => t + i.total, 0)),
-  };
-}
-
-/**
- * Apaga o recorte. Antes de mexer, grava uma cópia do banco em `data/` — é o
- * mesmo seguro que o script de linha de comando dá, e aqui vale mais ainda,
- * porque um clique é bem mais fácil de dar do que um comando com `--sim`.
- */
-export function executarLimpeza(alvo) {
-  const resumo = resumirLimpeza(alvo);
-  if (resumo.quantidade === 0) return { ...resumo, backup: null };
-
-  const carimbo = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const backup = path.join(path.dirname(arquivoBanco), `backup-${carimbo}.db`);
-  db.prepare('VACUUM INTO ?').run(backup);
-
-  db.transaction(() => {
-    for (const [tabela, linhas] of Object.entries(alvo)) {
-      if (linhas.length === 0) continue;
-      const stmt = db.prepare(`DELETE FROM ${tabela} WHERE id = ?`);
-      linhas.forEach((l) => stmt.run(l.id));
-    }
-  })();
-
-  return { ...resumo, backup };
-}

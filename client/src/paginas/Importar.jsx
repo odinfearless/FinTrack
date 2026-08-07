@@ -4,11 +4,13 @@ import { useMes } from '../App.jsx';
 import { num } from '../formato.js';
 import { Campo, Estado, useAviso, useDados } from '../componentes.jsx';
 import ImportarFatura from './ImportarFatura.jsx';
+import ImportarExtrato from './ImportarExtrato.jsx';
 
 const ROTULOS = {
   cartoes: 'Cartões', categorias: 'Categorias', pessoas: 'Pessoas',
   lancamentos: 'Gastos avulsos', parcelamentos: 'Parcelamentos',
   contas: 'Contas', receitas: 'Receitas', encargos: 'Encargos',
+  contas_bancarias: 'Contas bancárias',
 };
 
 export default function Importar() {
@@ -63,6 +65,8 @@ export default function Importar() {
   return (
     <>
       <ImportarFatura aoImportar={() => { estatisticas.recarregar(); recarregarMeses(); }} />
+
+      <ImportarExtrato aoImportar={() => { estatisticas.recarregar(); recarregarMeses(); }} />
 
       <div className="cartao">
         <div className="cartao-titulo">Importar uma planilha</div>

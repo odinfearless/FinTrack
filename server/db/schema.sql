@@ -23,6 +23,25 @@ CREATE TABLE IF NOT EXISTS cartoes (
   criado_em      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Conta corrente: é dela que saem os débitos e é nela que a receita cai.
+-- O extrato traz saldo e limite num instante, e não uma série histórica, então
+-- as três colunas guardam a última foto lida — `saldo_em` diz de quando ela é.
+-- Nome do titular e CPF não entram: identificam a pessoa, não a conta.
+CREATE TABLE IF NOT EXISTS contas_bancarias (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  nome         TEXT    NOT NULL UNIQUE,
+  banco        TEXT,
+  agencia      TEXT,
+  numero       TEXT,
+  cor          TEXT    NOT NULL DEFAULT '#f07c00',
+  saldo        REAL,
+  limite_total REAL,
+  limite_usado REAL,
+  saldo_em     TEXT,
+  ativo        INTEGER NOT NULL DEFAULT 1,
+  criado_em    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS categorias (
   id   INTEGER PRIMARY KEY AUTOINCREMENT,
   nome TEXT    NOT NULL UNIQUE,
@@ -40,18 +59,21 @@ CREATE TABLE IF NOT EXISTS pessoas (
 -- Gasto avulso: vive em um único mês.
 -- cartao_id é opcional: sem ele, o gasto saiu do bolso (Pix, transferência,
 -- dinheiro) e quem diz como é a coluna `forma`.
+-- conta_bancaria_id também é opcional, e só diz de onde o dinheiro saiu: quem
+-- veio do extrato tem a conta preenchida, quem foi digitado à mão não precisa.
 CREATE TABLE IF NOT EXISTS lancamentos (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  mes          TEXT    NOT NULL,
-  data         TEXT,
-  cartao_id    INTEGER          REFERENCES cartoes(id)     ON DELETE CASCADE,
-  forma        TEXT,
-  categoria_id INTEGER          REFERENCES categorias(id)  ON DELETE SET NULL,
-  pessoa_id    INTEGER          REFERENCES pessoas(id)     ON DELETE SET NULL,
-  descricao    TEXT    NOT NULL,
-  valor        REAL    NOT NULL,
-  observacao   TEXT,
-  criado_em    TEXT    NOT NULL DEFAULT (datetime('now')),
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  mes               TEXT    NOT NULL,
+  data              TEXT,
+  cartao_id         INTEGER          REFERENCES cartoes(id)          ON DELETE CASCADE,
+  conta_bancaria_id INTEGER          REFERENCES contas_bancarias(id) ON DELETE SET NULL,
+  forma             TEXT,
+  categoria_id      INTEGER          REFERENCES categorias(id)       ON DELETE SET NULL,
+  pessoa_id         INTEGER          REFERENCES pessoas(id)          ON DELETE SET NULL,
+  descricao         TEXT    NOT NULL,
+  valor             REAL    NOT NULL,
+  observacao        TEXT,
+  criado_em         TEXT    NOT NULL DEFAULT (datetime('now')),
   CHECK (cartao_id IS NOT NULL OR forma IS NOT NULL)
 );
 
@@ -76,27 +98,29 @@ CREATE TABLE IF NOT EXISTS parcelamentos (
 
 -- Contas pagas fora do cartão (luz, água, débito automático).
 CREATE TABLE IF NOT EXISTS contas (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  descricao      TEXT    NOT NULL,
-  valor          REAL    NOT NULL,
-  forma          TEXT    NOT NULL DEFAULT 'D.AUTO',
-  categoria_id   INTEGER          REFERENCES categorias(id) ON DELETE SET NULL,
-  dia_vencimento INTEGER,
-  mes_inicio     TEXT    NOT NULL,
-  mes_fim        TEXT,
-  criado_em      TEXT    NOT NULL DEFAULT (datetime('now'))
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  descricao         TEXT    NOT NULL,
+  valor             REAL    NOT NULL,
+  forma             TEXT    NOT NULL DEFAULT 'D.AUTO',
+  categoria_id      INTEGER          REFERENCES categorias(id)       ON DELETE SET NULL,
+  conta_bancaria_id INTEGER          REFERENCES contas_bancarias(id) ON DELETE SET NULL,
+  dia_vencimento    INTEGER,
+  mes_inicio        TEXT    NOT NULL,
+  mes_fim           TEXT,
+  criado_em         TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Receitas. Valor negativo é aceito de propósito: é assim que entram os
 -- ajustes da planilha (cheque especial, juros do limite).
 CREATE TABLE IF NOT EXISTS receitas (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  descricao  TEXT    NOT NULL,
-  valor      REAL    NOT NULL,
-  tipo       TEXT    NOT NULL DEFAULT 'fixa',
-  mes_inicio TEXT    NOT NULL,
-  mes_fim    TEXT,
-  criado_em  TEXT    NOT NULL DEFAULT (datetime('now'))
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  descricao         TEXT    NOT NULL,
+  valor             REAL    NOT NULL,
+  tipo              TEXT    NOT NULL DEFAULT 'fixa',
+  conta_bancaria_id INTEGER          REFERENCES contas_bancarias(id) ON DELETE SET NULL,
+  mes_inicio        TEXT    NOT NULL,
+  mes_fim           TEXT,
+  criado_em         TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Juros e encargos lançados na fatura de um mês específico.

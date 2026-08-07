@@ -32,6 +32,12 @@ db.pragma('foreign_keys = ON');
  */
 const COLUNAS_NOVAS = [
   ['cartoes', 'final', 'TEXT'],
+  // De qual conta corrente o registro saiu. O SQLite só aceita REFERENCES em
+  // ALTER TABLE quando o padrão é NULL — que é o caso: quem foi cadastrado à
+  // mão, antes de existir conta bancária no app, continua sem nenhuma.
+  ['lancamentos', 'conta_bancaria_id', 'INTEGER REFERENCES contas_bancarias(id) ON DELETE SET NULL'],
+  ['contas', 'conta_bancaria_id', 'INTEGER REFERENCES contas_bancarias(id) ON DELETE SET NULL'],
+  ['receitas', 'conta_bancaria_id', 'INTEGER REFERENCES contas_bancarias(id) ON DELETE SET NULL'],
 ];
 
 function garantirColunas() {
@@ -93,8 +99,11 @@ function permitirGastoSemCartao() {
 export function migrar() {
   const schema = fs.readFileSync(path.join(raiz, 'server', 'db', 'schema.sql'), 'utf8');
   db.exec(schema);
-  garantirColunas();
+  // A reconstrução vem antes das colunas novas: ela recria `lancamentos` a
+  // partir de uma lista fixa de campos e levaria embora qualquer coluna
+  // acrescentada por ALTER logo antes dela.
   permitirGastoSemCartao();
+  garantirColunas();
 }
 
 /** Popula categorias e cartões básicos na primeira execução. */
