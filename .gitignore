@@ -7,6 +7,9 @@ data/
 *.db-wal
 *.db-shm
 
+# senha do banco e portas da máquina; o .env.example é que fica versionado
+.env
+
 *.log
 .DS_Store
 Thumbs.db

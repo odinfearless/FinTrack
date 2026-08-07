@@ -1,0 +1,21 @@
+# O que não deve entrar na imagem. Fora o peso, há um motivo de segurança:
+# `data/` guarda o banco SQLite antigo e os backups das limpezas — dados
+# financeiros reais, que não têm por que viajar dentro de uma imagem.
+node_modules
+client/node_modules
+client/dist
+data
+.git
+.gitignore
+.env
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.pdf
+*.xlsx
+*.xls
+por.traineddata
+Dockerfile
+docker-compose.yml
+README.md

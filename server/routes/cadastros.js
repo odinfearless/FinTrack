@@ -41,8 +41,8 @@ function recorteDaRequisicao(req) {
   return { mes: mes || null, soAvulsos: bruto === true || bruto === '1' || bruto === 'true' };
 }
 
-function exigirCartao(id) {
-  const cartao = db.prepare('SELECT id, nome FROM cartoes WHERE id = ?').get(id);
+async function exigirCartao(id) {
+  const cartao = await db.prepare('SELECT id, nome FROM cartoes WHERE id = ?').get(Number(id));
   if (!cartao) {
     const erro = new Error('Cartão não encontrado.');
     erro.status = 404;
@@ -51,16 +51,20 @@ function exigirCartao(id) {
   return cartao;
 }
 
-cartoes.get('/:id/limpeza', (req, res) => {
-  const cartao = exigirCartao(req.params.id);
-  const recorte = recorteDaRequisicao(req);
-  res.json({ cartao, ...recorte, ...resumirLimpeza(levantarLimpeza(cartao.id, recorte)) });
+cartoes.get('/:id/limpeza', async (req, res, next) => {
+  try {
+    const cartao = await exigirCartao(req.params.id);
+    const recorte = recorteDaRequisicao(req);
+    res.json({ cartao, ...recorte, ...resumirLimpeza(await levantarLimpeza(cartao.id, recorte)) });
+  } catch (erro) { next(erro); }
 });
 
-cartoes.post('/:id/limpeza', (req, res) => {
-  const cartao = exigirCartao(req.params.id);
-  const recorte = recorteDaRequisicao(req);
-  res.json({ cartao, ...recorte, ...executarLimpeza(levantarLimpeza(cartao.id, recorte)) });
+cartoes.post('/:id/limpeza', async (req, res, next) => {
+  try {
+    const cartao = await exigirCartao(req.params.id);
+    const recorte = recorteDaRequisicao(req);
+    res.json({ cartao, ...recorte, ...await executarLimpeza(await levantarLimpeza(cartao.id, recorte)) });
+  } catch (erro) { next(erro); }
 });
 
 /**
@@ -117,23 +121,28 @@ export const pessoas = criarCrud({
 /** Encargos são chave (mes, cartao_id): a rota faz upsert em vez de duplicar. */
 export const encargos = Router();
 
-encargos.get('/', (req, res) => {
+encargos.get('/', async (req, res, next) => {
+  try {
   const { mes } = req.query;
   const sql = `SELECT e.*, c.nome AS cartao FROM encargos e
                JOIN cartoes c ON c.id = e.cartao_id
                ${mes ? 'WHERE e.mes = ?' : ''} ORDER BY c.nome`;
-  res.json(mes ? db.prepare(sql).all(mes) : db.prepare(sql).all());
+  res.json(mes ? await db.prepare(sql).all(mes) : await db.prepare(sql).all());
+  } catch (erro) { next(erro); }
 });
 
-encargos.put('/', (req, res) => {
+encargos.put('/', async (req, res, next) => {
+  try {
   const { mes, cartao_id: cartaoId } = req.body || {};
   const valor = Number(req.body?.valor ?? 0);
   if (!/^\d{4}-\d{2}$/.test(String(mes)) || !cartaoId) {
     return res.status(400).json({ erro: 'Informe o mês (AAAA-MM) e o cartão.' });
   }
-  db.prepare(`
+  const { linha } = await db.prepare(`
     INSERT INTO encargos (mes, cartao_id, valor) VALUES (?, ?, ?)
-    ON CONFLICT (mes, cartao_id) DO UPDATE SET valor = excluded.valor`)
+    ON CONFLICT (mes, cartao_id) DO UPDATE SET valor = excluded.valor
+    RETURNING *`)
     .run(mes, cartaoId, Number.isFinite(valor) ? valor : 0);
-  return res.json(db.prepare('SELECT * FROM encargos WHERE mes = ? AND cartao_id = ?').get(mes, cartaoId));
+  return res.json(linha);
+  } catch (erro) { return next(erro); }
 });

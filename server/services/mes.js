@@ -14,31 +14,18 @@ const JOINS = `
   LEFT JOIN categorias cat ON cat.id = t.categoria_id
   LEFT JOIN pessoas    p   ON p.id   = t.pessoa_id`;
 
-/**
- * Consulta preparada na primeira vez que é usada, e não ao carregar o módulo.
- *
- * O ESM avalia os imports antes do corpo de quem importa, então este arquivo é
- * lido antes de `migrar()` rodar lá no index.js. Preparando aqui em cima, um
- * banco novo nem abre — as tabelas ainda não existem — e um banco antigo quebra
- * assim que uma consulta mencionar tabela ou coluna criada pela migração.
- */
-function consulta(sql) {
-  let pronta = null;
-  return () => {
-    if (!pronta) pronta = db.prepare(sql);
-    return pronta;
-  };
-}
-
-const qAvulsos = consulta(`
+// O SQL de cada consulta, solto. No driver do Postgres "preparar" não abre
+// conexão nem toca no banco: é só guardar o texto até alguém executá-lo, então
+// não há mais o risco de ordem de carga que existia com o SQLite.
+const qAvulsos = db.prepare(`
   SELECT t.*, ${SELECT_CARTAO} FROM lancamentos t ${JOINS}
   WHERE t.mes = ? ORDER BY t.valor DESC`);
 
-const qParcelamentos = consulta(`
+const qParcelamentos = db.prepare(`
   SELECT t.*, ${SELECT_CARTAO} FROM parcelamentos t ${JOINS}
   WHERE t.mes_inicio <= ? ORDER BY t.valor_parcela DESC`);
 
-const qContas = consulta(`
+const qContas = db.prepare(`
   SELECT t.*, cat.nome AS categoria, cat.cor AS categoria_cor, cb.nome AS conta_bancaria
   FROM contas t
   LEFT JOIN categorias       cat ON cat.id = t.categoria_id
@@ -46,14 +33,14 @@ const qContas = consulta(`
   WHERE t.mes_inicio <= ? AND (t.mes_fim IS NULL OR t.mes_fim >= ?)
   ORDER BY t.valor DESC`);
 
-const qReceitas = consulta(`
+const qReceitas = db.prepare(`
   SELECT t.*, cb.nome AS conta_bancaria
   FROM receitas t
   LEFT JOIN contas_bancarias cb ON cb.id = t.conta_bancaria_id
   WHERE t.mes_inicio <= ? AND (t.mes_fim IS NULL OR t.mes_fim >= ?)
   ORDER BY t.valor DESC`);
 
-const qEncargos = consulta(`
+const qEncargos = db.prepare(`
   SELECT e.*, c.nome AS cartao FROM encargos e
   JOIN cartoes c ON c.id = e.cartao_id WHERE e.mes = ?`);
 
@@ -79,10 +66,10 @@ function base(linha, origem) {
  * Todas as despesas de cartão que caem no mês, já expandidas: o avulso vem
  * como está e o parcelamento vira a parcela daquela competência.
  */
-export function despesasDoMes(mes) {
+export async function despesasDoMes(mes) {
   const saida = [];
 
-  for (const l of qAvulsos().all(mes)) {
+  for (const l of await qAvulsos.all(mes)) {
     saida.push({
       ...base(l, 'avulso'),
       data: l.data,
@@ -92,7 +79,7 @@ export function despesasDoMes(mes) {
     });
   }
 
-  for (const p of qParcelamentos().all(mes)) {
+  for (const p of await qParcelamentos.all(mes)) {
     const indice = diferencaMeses(p.mes_inicio, mes); // 0 = primeira parcela
     if (indice < 0 || indice >= p.parcelas) continue;
     const restantes = p.parcelas - (indice + 1);
@@ -112,15 +99,15 @@ export function despesasDoMes(mes) {
   return saida.sort((x, y) => y.valor - x.valor);
 }
 
-export function contasDoMes(mes) {
-  return qContas().all(mes, mes).map((c) => ({
+export async function contasDoMes(mes) {
+  return (await qContas.all(mes, mes)).map((c) => ({
     ...c,
     recorrente: c.mes_fim === null || c.mes_fim !== c.mes_inicio,
   }));
 }
 
-export function receitasDoMes(mes) {
-  return qReceitas().all(mes, mes).map((r) => ({
+export async function receitasDoMes(mes) {
+  return (await qReceitas.all(mes, mes)).map((r) => ({
     ...r,
     recorrente: r.mes_fim === null || r.mes_fim !== r.mes_inicio,
   }));
@@ -131,14 +118,14 @@ function somar(itens, campo = 'valor') {
 }
 
 /** Consolidado do mês: é o que alimenta os cartões de indicador do painel. */
-export function resumoDoMes(mes) {
-  const despesas = despesasDoMes(mes);
-  const contas = contasDoMes(mes);
-  const receitas = receitasDoMes(mes);
-  const encargos = qEncargos().all(mes);
+export async function resumoDoMes(mes) {
+  const despesas = await despesasDoMes(mes);
+  const contas = await contasDoMes(mes);
+  const receitas = await receitasDoMes(mes);
+  const encargos = await qEncargos.all(mes);
 
   const porCartao = new Map();
-  for (const c of db.prepare('SELECT * FROM cartoes WHERE ativo = 1 ORDER BY nome').all()) {
+  for (const c of await db.prepare('SELECT * FROM cartoes WHERE ativo = 1 ORDER BY nome').all()) {
     porCartao.set(c.id, {
       cartao_id: c.id, cartao: c.nome, cor: c.cor, limite: c.limite,
       total: 0, encargos: 0, itens: 0, avulsos: 0, parcelamentos: 0,
@@ -230,23 +217,29 @@ export function resumoDoMes(mes) {
 }
 
 /** Projeção para os próximos meses, contando só o que já é conhecido hoje. */
-export function projecao(mesInicial, quantidade = 6) {
-  return intervalo(mesInicial, somarMeses(mesInicial, quantidade - 1)).map((m) => {
-    const r = resumoDoMes(m);
-    return {
-      mes: m,
+export async function projecao(mesInicial, quantidade = 6) {
+  const meses = intervalo(mesInicial, somarMeses(mesInicial, quantidade - 1));
+  // Em sequência, e não em `Promise.all`: cada resumo dispara várias consultas,
+  // e dois anos de projeção de uma vez esvaziariam o pool — as conexões que
+  // faltam viram espera, e o ganho de paralelismo vira fila.
+  const linhas = [];
+  for (const mes of meses) {
+    const r = await resumoDoMes(mes);
+    linhas.push({
+      mes,
       renda_liquida: r.renda_liquida,
       divida_total: r.divida_total,
       saldo: r.saldo,
       total_cartoes: r.total_cartoes,
       total_contas: r.total_contas,
-    };
-  });
+    });
+  }
+  return linhas;
 }
 
 /** Competências que têm algum dado — usado para montar o seletor de mês. */
-export function mesesComDados() {
-  const linhas = db.prepare(`
+export async function mesesComDados() {
+  const linhas = await db.prepare(`
     SELECT mes FROM lancamentos
     UNION SELECT mes_inicio FROM parcelamentos
     UNION SELECT mes_inicio FROM contas

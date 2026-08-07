@@ -147,24 +147,29 @@ function recorteDeVigencia(req) {
 // rotas. Escrever os dois handlers à mão só criaria a chance de a prévia e o
 // DELETE divergirem em um dos recursos.
 for (const tabela of ['contas', 'receitas']) {
-  limpeza.get(`/${tabela}`, (req, res) => {
-    const recorte = recorteDeVigencia(req);
-    res.json({ ...recorte, ...resumirLimpeza(levantarLimpezaVigencia(tabela, recorte)) });
+  limpeza.get(`/${tabela}`, async (req, res, next) => {
+    try {
+      const recorte = recorteDeVigencia(req);
+      res.json({ ...recorte, ...resumirLimpeza(await levantarLimpezaVigencia(tabela, recorte)) });
+    } catch (erro) { next(erro); }
   });
 
-  limpeza.post(`/${tabela}`, (req, res) => {
-    const recorte = recorteDeVigencia(req);
-    res.json({ ...recorte, ...executarLimpeza(levantarLimpezaVigencia(tabela, recorte)) });
+  limpeza.post(`/${tabela}`, async (req, res, next) => {
+    try {
+      const recorte = recorteDeVigencia(req);
+      res.json({ ...recorte, ...await executarLimpeza(await levantarLimpezaVigencia(tabela, recorte)) });
+    } catch (erro) { next(erro); }
   });
 }
 
 /** Consulta unificada das despesas de cartão já expandidas para o mês. */
 export const despesas = Router();
 
-despesas.get('/', (req, res) => {
+despesas.get('/', async (req, res, next) => {
+  try {
   const mes = req.query.mes || mesAtual();
   const { cartao, categoria, pessoa, origem, q } = req.query;
-  let itens = despesasDoMes(mes);
+  let itens = await despesasDoMes(mes);
 
   if (cartao === 'sem') itens = itens.filter((d) => !d.cartao_id);
   else if (cartao) itens = itens.filter((d) => String(d.cartao_id) === String(cartao));
@@ -188,11 +193,16 @@ despesas.get('/', (req, res) => {
     quantidade: itens.length,
     itens,
   });
+  } catch (erro) { next(erro); }
 });
 
 /** Antecipa a quitação de um parcelamento reduzindo o número de parcelas. */
-despesas.post('/parcelamentos/:id/quitar', (req, res) => {
-  const parcelamento = db.prepare('SELECT * FROM parcelamentos WHERE id = ?').get(req.params.id);
+despesas.post('/parcelamentos/:id/quitar', async (req, res, next) => {
+  try {
+  const id = Number(req.params.id);
+  const parcelamento = Number.isInteger(id)
+    ? await db.prepare('SELECT * FROM parcelamentos WHERE id = ?').get(id)
+    : null;
   if (!parcelamento) return res.status(404).json({ erro: 'Parcelamento não encontrado.' });
   const mes = req.body?.mes || mesAtual();
   const pagas = Math.max(1, Math.min(
@@ -200,9 +210,11 @@ despesas.post('/parcelamentos/:id/quitar', (req, res) => {
     1 + (Number(mes.slice(0, 4)) * 12 + Number(mes.slice(5, 7)))
       - (Number(parcelamento.mes_inicio.slice(0, 4)) * 12 + Number(parcelamento.mes_inicio.slice(5, 7))),
   ));
-  db.prepare('UPDATE parcelamentos SET parcelas = ? WHERE id = ?').run(pagas, req.params.id);
+  const { linha } = await db.prepare(
+    'UPDATE parcelamentos SET parcelas = ? WHERE id = ? RETURNING *').run(pagas, id);
   return res.json({
-    ...db.prepare('SELECT * FROM parcelamentos WHERE id = ?').get(req.params.id),
+    ...linha,
     ultima_parcela: somarMeses(parcelamento.mes_inicio, pagas - 1),
   });
+  } catch (erro) { return next(erro); }
 });

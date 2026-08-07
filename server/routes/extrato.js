@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { db } from '../db/index.js';
+import { db, transacao } from '../db/index.js';
 import { extrair, analisar } from '../services/leitorExtrato.js';
 import { normalizar } from '../services/categorias.js';
 import { contasDoMes, receitasDoMes, despesasDoMes } from '../services/mes.js';
@@ -30,8 +30,8 @@ const upload = multer({
  * duas contas no mesmo banco veria as duas se a busca fosse só pelo banco, e
  * escolher a errada mandaria os lançamentos para o lugar errado.
  */
-function acharContaBancaria(cabecalho) {
-  const contas = db.prepare('SELECT * FROM contas_bancarias').all();
+async function acharContaBancaria(cabecalho) {
+  const contas = await db.prepare('SELECT * FROM contas_bancarias').all();
   const digitos = (v) => String(v ?? '').replace(/\D/g, '');
 
   if (cabecalho.numero) {
@@ -61,15 +61,20 @@ const chaveDe = (descricao, valor) => `${normalizar(descricao)}|${Math.round(Num
  * que o valor tenha mudado — a luz nunca vem igual duas vezes, e cadastrar a
  * segunda faria as duas somarem no painel.
  */
-function marcarConhecidos(itens) {
+async function marcarConhecidos(itens) {
   const meses = [...new Set(itens.map((i) => i.mes).filter(Boolean))];
-  const cache = new Map(meses.map((mes) => [mes, {
-    receitas: new Set(receitasDoMes(mes).map((r) => chaveDe(r.descricao, r.valor))),
-    gastos: new Set(despesasDoMes(mes)
-      .filter((d) => !d.cartao_id)
-      .map((d) => chaveDe(d.descricao, d.valor))),
-    contas: contasDoMes(mes),
-  }]));
+  // Um mês por vez: `Promise.all` sobre todos os meses de um extrato dispararia
+  // três consultas por mês de uma vez, e o ganho não paga a fila no pool.
+  const cache = new Map();
+  for (const mes of meses) {
+    cache.set(mes, {
+      receitas: new Set((await receitasDoMes(mes)).map((r) => chaveDe(r.descricao, r.valor))),
+      gastos: new Set((await despesasDoMes(mes))
+        .filter((d) => !d.cartao_id)
+        .map((d) => chaveDe(d.descricao, d.valor))),
+      contas: await contasDoMes(mes),
+    });
+  }
 
   return itens.map((item) => {
     const doMes = cache.get(item.mes);
@@ -111,7 +116,7 @@ extrato.post('/ler', upload.single('arquivo'), async (req, res, next) => {
       req.file.mimetype,
     );
 
-    const categorias = db.prepare('SELECT id, nome FROM categorias').all();
+    const categorias = await db.prepare('SELECT id, nome FROM categorias').all();
     const { itens, descartadas, totais, conferencia } = analisar(linhas, {
       mesPadrao, categorias, saldos,
     });
@@ -124,11 +129,11 @@ extrato.post('/ler', upload.single('arquivo'), async (req, res, next) => {
       // linha por linha se algum saldo entrou como despesa.
       colunas_detectadas: colunas,
       conta,
-      conta_bancaria: acharContaBancaria(conta),
+      conta_bancaria: await acharContaBancaria(conta),
       conferencia,
       totais,
       linhas_lidas: linhas.length,
-      itens: marcarConhecidos(itens),
+      itens: await marcarConhecidos(itens),
       descartadas: descartadas.slice(0, 40),
     });
   } catch (erro) {
@@ -163,7 +168,7 @@ function vigenciaDe(item, mes) {
 const DESTINOS = new Set(['receita', 'conta', 'gasto']);
 
 /** Etapa 2 — grava o que o usuário revisou e confirmou. */
-extrato.post('/confirmar', (req, res, next) => {
+extrato.post('/confirmar', async (req, res, next) => {
   try {
     const { itens, conta_bancaria_id: contaId } = req.body || {};
     const mesPadrao = ehMes(req.body?.mes) ? req.body.mes : mesAtual();
@@ -174,28 +179,30 @@ extrato.post('/confirmar', (req, res, next) => {
 
     let contaBancaria = null;
     if (contaId) {
-      contaBancaria = db.prepare('SELECT id, nome FROM contas_bancarias WHERE id = ?').get(contaId);
+      contaBancaria = await db.prepare('SELECT id, nome FROM contas_bancarias WHERE id = ?').get(Number(contaId));
       if (!contaBancaria) return res.status(404).json({ erro: 'Conta bancária não encontrada.' });
     }
 
-    const insReceita = db.prepare(`
+    const criados = { receitas: 0, contas: 0, gastos: 0 };
+    const ignorados = [];
+
+    // Tudo ou nada: metade de um extrato importado deixa o mês num estado que
+    // ninguém consegue auditar contra o documento.
+    await transacao(async (tx) => {
+      const insReceita = tx.prepare(`
       INSERT INTO receitas (descricao, valor, tipo, conta_bancaria_id, mes_inicio, mes_fim)
-      VALUES (@descricao, @valor, @tipo, @conta_bancaria_id, @mes_inicio, @mes_fim)`);
-    const insConta = db.prepare(`
+        VALUES (@descricao, @valor, @tipo, @conta_bancaria_id, @mes_inicio, @mes_fim)`);
+      const insConta = tx.prepare(`
       INSERT INTO contas (descricao, valor, forma, categoria_id, conta_bancaria_id,
                           dia_vencimento, mes_inicio, mes_fim)
       VALUES (@descricao, @valor, @forma, @categoria_id, @conta_bancaria_id,
               @dia_vencimento, @mes_inicio, @mes_fim)`);
-    const insGasto = db.prepare(`
+      const insGasto = tx.prepare(`
       INSERT INTO lancamentos (mes, data, forma, categoria_id, conta_bancaria_id,
                                descricao, valor, observacao)
       VALUES (@mes, @data, @forma, @categoria_id, @conta_bancaria_id,
               @descricao, @valor, @observacao)`);
 
-    const criados = { receitas: 0, contas: 0, gastos: 0 };
-    const ignorados = [];
-
-    const gravar = db.transaction(() => {
       for (const item of itens) {
         const descricao = String(item.descricao || '').trim();
         const valor = Number(item.valor);
@@ -217,7 +224,7 @@ extrato.post('/confirmar', (req, res, next) => {
         };
 
         if (item.destino === 'receita') {
-          insReceita.run({
+          await insReceita.run({
             descricao: comum.descricao,
             conta_bancaria_id: comum.conta_bancaria_id,
             // Receita negativa é o ajuste da planilha — juros do limite, cheque
@@ -232,7 +239,7 @@ extrato.post('/confirmar', (req, res, next) => {
         }
 
         if (item.destino === 'conta') {
-          insConta.run({
+          await insConta.run({
             ...comum,
             // Em `contas` e em `lancamentos` a despesa é positiva: lá o sinal
             // de menos significa estorno, e não saída de dinheiro.
@@ -246,7 +253,7 @@ extrato.post('/confirmar', (req, res, next) => {
           continue;
         }
 
-        insGasto.run({
+        await insGasto.run({
           ...comum,
           mes,
           data: item.data || null,
@@ -261,8 +268,6 @@ extrato.post('/confirmar', (req, res, next) => {
         criados.gastos += 1;
       }
     });
-
-    gravar();
 
     return res.json({
       conta_bancaria: contaBancaria?.nome || null,
