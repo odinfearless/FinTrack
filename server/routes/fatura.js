@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { db, transacao } from '../db/index.js';
 import { extrair, analisar } from '../services/leitorFatura.js';
+import { construirModelo, sugerir } from '../services/classificador.js';
 import { despesasDoMes } from '../services/mes.js';
 import { somarMeses, ehMes, mesAtual } from '../lib/mes.js';
 
@@ -61,6 +62,21 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
     const categorias = await db.prepare('SELECT id, nome FROM categorias').all();
     const { itens, descartadas, formato, total_fatura: totalFatura } = analisar(linhas, { mes, categorias });
 
+    // A sugestão do leitor vem da lista fixa de apelidos; aqui ela é revista
+    // pelo que o histórico deste cartão ensina. O modelo é montado uma vez por
+    // leitura, e não por item — são dezenas de itens e uma consulta só.
+    const modelo = await construirModelo();
+    const classificados = itens.map((item) => {
+      const s = sugerir(modelo, item.descricao, { cartaoId, categorias });
+      if (!s?.categoria_id) return item;
+      return {
+        ...item,
+        categoria_id: s.categoria_id,
+        categoria_motivo: s.motivo,
+        categoria_confianca: s.confianca,
+      };
+    });
+
     return res.json({
       arquivo: req.file.originalname,
       origem,
@@ -77,7 +93,7 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
       // leitura saiu como saiu.
       formato,
       total_fatura: totalFatura,
-      itens: await marcarDuplicatas(itens, mes, cartaoId),
+      itens: await marcarDuplicatas(classificados, mes, cartaoId),
       descartadas: descartadas.slice(0, 40),
     });
   } catch (erro) {

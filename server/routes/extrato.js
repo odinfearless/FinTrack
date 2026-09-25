@@ -3,6 +3,7 @@ import multer from 'multer';
 import { db, transacao } from '../db/index.js';
 import { extrair, analisar } from '../services/leitorExtrato.js';
 import { normalizar } from '../services/categorias.js';
+import { construirModelo, sugerir } from '../services/classificador.js';
 import { contasDoMes, receitasDoMes, despesasDoMes } from '../services/mes.js';
 import { ehMes, mesAtual, somarMeses } from '../lib/mes.js';
 
@@ -121,6 +122,20 @@ extrato.post('/ler', upload.single('arquivo'), async (req, res, next) => {
       mesPadrao, categorias, saldos,
     });
 
+    // Sem cartão aqui: o extrato é da conta corrente, então a chave por cartão
+    // não se aplica e só valem a descrição exata e a raiz do estabelecimento.
+    const modelo = await construirModelo();
+    const classificados = itens.map((item) => {
+      const s = sugerir(modelo, item.descricao, { categorias });
+      if (!s?.categoria_id) return item;
+      return {
+        ...item,
+        categoria_id: s.categoria_id,
+        categoria_motivo: s.motivo,
+        categoria_confianca: s.confianca,
+      };
+    });
+
     return res.json({
       arquivo: req.file.originalname,
       paginas,
@@ -133,7 +148,7 @@ extrato.post('/ler', upload.single('arquivo'), async (req, res, next) => {
       conferencia,
       totais,
       linhas_lidas: linhas.length,
-      itens: await marcarConhecidos(itens),
+      itens: await marcarConhecidos(classificados),
       descartadas: descartadas.slice(0, 40),
     });
   } catch (erro) {

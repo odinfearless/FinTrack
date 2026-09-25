@@ -154,6 +154,7 @@ recolhido no fim da lista, para continuarem alcançáveis.
 - **Contas bancárias** — a conta corrente de onde saem os débitos e onde a receita cai: saldo e limite lidos do extrato
 - **Categorias e pessoas** — classificação e quem reembolsa
 - **Importar gastos** — trazer um `.xlsx`, uma **fatura em PDF/imagem** ou o **extrato da conta em PDF** para dentro do banco
+- **Classificar gastos** — o acervo sem categoria, agrupado por estabelecimento, com sugestão vinda do seu histórico
 
 ## Importando a fatura do cartão
 
@@ -428,6 +429,57 @@ preto some contra o fundo do tema escuro. Por isso o preto vale para o plástico
 mas quando a mesma cor vira marca de dado ela é clareada o suficiente para
 continuar visível nos dois temas (`corDeMarca`, em `client/src/CartaoVisual.jsx`).
 
+## O classificador que aprende
+
+A sugestão de categoria começou como uma lista fixa de apelidos: uns sessenta
+termos escritos à mão. Ela resolve o caso óbvio e para aí — "MLP *KaBuM" não
+cai em lugar nenhum, e um posto chamado "Auto posto rio amazonas" ia para
+Compras online porque a palavra "amazon" aparece no meio do nome do rio.
+
+Agora existe uma segunda fonte, que a lista nunca terá: **o seu histórico**.
+Cada gasto já categorizado vira exemplo, e de cada um saem três sinais, do mais
+específico para o mais geral:
+
+| Sinal | O que reconhece |
+|---|---|
+| Descrição exata | `DL*UberRides` de novo é o mesmo `DL*UberRides` |
+| Raiz do nome | `Drogasil3953carapicuibabra` e `Drogasil 4874carapicuibabra` são a mesma rede |
+| Primeira palavra, **por cartão** | no print do Inter a categoria do próprio banco vem colada na frente (`Transporte DL*UberRides`) |
+
+O terceiro é o que aproveita o formato de **cada cartão**: essa primeira palavra
+só significa algo naquele cartão — em outro, é o começo do nome da loja. Por
+isso a chave carrega o cartão junto.
+
+Cada chave vota com `peso × vezes`, e a confiança é a fatia do vencedor. A tela
+mostra **por que** sugeriu ("mesmo estabelecimento já classificado assim 4
+vezes"), porque uma sugestão que se explica pode ser conferida; uma que aparece
+sozinha só pode ser aceita no escuro.
+
+Nada sai da máquina: é contagem sobre as suas próprias linhas, refeita a cada
+importação — sem cache, para que corrigir uma categoria valha já na importação
+seguinte.
+
+### Classificar em grupo
+
+O número de linhas sem categoria assusta mais que o trabalho real: o mesmo
+estabelecimento repete. A tela **Classificar gastos** agrupa por
+estabelecimento, sugere o que o histórico souber e aplica ao grupo inteiro de
+uma vez — cinco compras na mesma farmácia são **uma** decisão.
+
+E cada grupo resolvido alimenta o classificador. Depois de classificar a
+Drogasil uma vez, uma loja da mesma rede **em outra cidade, nunca vista antes**,
+já chega classificada na importação seguinte.
+
+### O que esperar no começo
+
+Ele acerta quando o estabelecimento se repete, e não tem o que dizer sobre um
+que nunca viu. Medido sobre um histórico de 33 exemplos, com validação que
+esconde a linha prevista: **acertou 100% das vezes em que opinou, e opinou em
+48%** — o resto eram estabelecimentos únicos, sem repetição da qual aprender.
+
+O ganho é composto: começa modesto e melhora a cada importação. É o contrário
+da lista fixa, que é tão boa no primeiro dia quanto no centésimo.
+
 ## Limpar contas e receitas
 
 **Contas e débitos** tem um botão **Limpar contas**, e **Receitas** um **Limpar
@@ -481,7 +533,8 @@ server/
   services/importador.js   leitura da planilha
   services/leitorFatura.js leitura da fatura do cartão (PDF e imagem)
   services/leitorExtrato.js leitura do extrato da conta (PDF)
-  services/categorias.js   sugestão de categoria, usada pelos dois leitores
+  services/categorias.js   lista fixa de apelidos (o piso da sugestão)
+  services/classificador.js  aprende categoria do seu histórico
   routes/                  endpoints REST
 client/src/
   paginas/               uma tela por arquivo

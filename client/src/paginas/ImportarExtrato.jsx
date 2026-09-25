@@ -527,6 +527,11 @@ export default function ImportarExtrato({ aoImportar }) {
                             {categorias.map((o) => <option key={o.valor} value={o.valor}>{o.texto}</option>)}
                           </select>
                         )}
+                        {!ehReceita && i.categoria_motivo && (
+                          <div className="fraco" style={{ fontSize: 11.5, marginTop: 3, maxWidth: 150 }}>
+                            {i.categoria_motivo}
+                          </div>
+                        )}
                       </td>
                       <td style={{ whiteSpace: 'nowrap' }}>
                         {ehGasto ? <span className="fraco">só neste mês</span> : (

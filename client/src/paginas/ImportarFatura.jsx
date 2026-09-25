@@ -361,6 +361,14 @@ export default function ImportarFatura({ aoImportar }) {
                         <option value="">Sem categoria</option>
                         {categorias.map((o) => <option key={o.valor} value={o.valor}>{o.texto}</option>)}
                       </select>
+                      {/* De onde veio o palpite. Uma sugestão que se explica
+                          pode ser conferida; uma que aparece sozinha só pode
+                          ser aceita no escuro. */}
+                      {i.categoria_motivo && (
+                        <div className="fraco" style={{ fontSize: 11.5, marginTop: 3, maxWidth: 150 }}>
+                          {i.categoria_motivo}
+                        </div>
+                      )}
                     </td>
                     <td>
                       <select

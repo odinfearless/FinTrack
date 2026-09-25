@@ -14,6 +14,7 @@ import { painel } from './routes/painel.js';
 import { importacao } from './routes/importacao.js';
 import { fatura } from './routes/fatura.js';
 import { extrato } from './routes/extrato.js';
+import { classificacao } from './routes/classificacao.js';
 
 const app = express();
 app.use(cors());
@@ -33,6 +34,7 @@ app.use('/api/limpeza', limpeza);
 app.use('/api/importacao', importacao);
 app.use('/api/fatura', fatura);
 app.use('/api/extrato', extrato);
+app.use('/api/classificacao', classificacao);
 app.use('/api', painel);
 
 app.get('/api/saude', (_req, res) => res.json({ ok: true, banco: descricaoBanco }));
