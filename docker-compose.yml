@@ -21,10 +21,12 @@ services:
       # ordenação de nome saia com acento fora de lugar.
       LANG: pt_BR.utf8
     ports:
-      # Publicado para o `npm run dev` da máquina alcançar o banco. Em outra
-      # máquina que não a sua, prefira remover esta linha: o app do compose
-      # fala com o banco pela rede interna e não precisa da porta aberta.
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Preso ao 127.0.0.1 de propósito: o app do compose fala com o banco pela
+      # rede interna e não precisa desta porta. Ela existe só para o
+      # `npm run dev` da própria máquina alcançar o banco — e publicada em
+      # 0.0.0.0 deixaria o Postgres, com a senha padrão, aberto a qualquer
+      # máquina da rede local.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - dados-postgres:/var/lib/postgresql/data
     healthcheck:

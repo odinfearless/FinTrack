@@ -594,7 +594,13 @@ const RX_LINHA_DE_PARCELA = /^(?:parcela\s*)?\d{1,2}\s*(?:\/|\s+de\s+)\s*\d{1,2}
 // Botões do rodapé da tela. Merecem regra própria porque caem exatamente onde
 // o nome do estabelecimento cairia — logo abaixo do último lançamento — e sem
 // isso "Parcelar fatura" viraria parte do nome da última compra.
-const RX_BOTAO_DO_APP = /^(pagar|parcelar|antecipar|ver\s+(mais|fatura|todos))\b/i;
+//
+// "Ativar débito automático" entrou na lista por um motivo concreto: grudado na
+// descrição, ele casava com o filtro de ruído da fatura (que conhece "débito
+// automático" como linha de resumo) e a última compra da tela era descartada
+// inteira, com valor e tudo. A barra de tolerância no fim do bloco `analisar`
+// impede o estrago; reconhecer o botão aqui evita que ele chegue lá.
+const RX_BOTAO_DO_APP = /^(pagar|parcelar|antecipar|ativar|ver\s+(mais|fatura|todos))\b/i;
 
 /**
  * É um extrato de app, e não uma fatura?
@@ -963,9 +969,35 @@ export function analisar(linhas, { mes, categorias = [] } = {}) {
       let util = trecho;
 
       if (ruido && ruido.index > 0) {
-        // Ruído no fim: fica a compra, sai o resumo.
-        util = trecho.slice(0, ruido.index).trim();
-        descartadas.push({ linha: indice + 1, texto: trecho.slice(ruido.index).trim(), motivo: 'resumo da fatura' });
+        const esquerda = trecho.slice(0, ruido.index).trim();
+
+        // Onde está o valor em relação ao ruído decide o que fazer, e há três
+        // situações — duas delas fáceis de confundir:
+        //
+        //   valor à esquerda    a compra veio primeiro e o resumo grudou no
+        //                       fim. Fica a compra, sai o resumo.
+        //   valor à direita,
+        //   nome à esquerda     o "ruído" não é resumo: é o rodapé da tela do
+        //                       aplicativo ("Ativar débito automático") caindo
+        //                       em cima do último lançamento. Cortar levaria o
+        //                       valor junto e a compra sumiria sem aviso.
+        //   valor à direita,
+        //   nada à esquerda     a linha É o resumo, com a data na frente —
+        //                       "10/07 Pagamento via conta -10.912,72", que é a
+        //                       quitação da fatura anterior. Ela precisa sumir
+        //                       inteira, senão entra como um crédito enorme.
+        const semData = esquerda.slice(acharData(esquerda, mes)?.fim ?? 0);
+        const nomeAEsquerda = limparDescricao(semData);
+        const ehRodapeGrudado = !acharValor(esquerda)
+          && nomeAEsquerda.length >= 3 && /\p{L}{3}/u.test(nomeAEsquerda);
+
+        if (ehRodapeGrudado) {
+          // Some só o pedaço que casou; o resto da linha segue inteiro.
+          util = `${esquerda} ${trecho.slice(ruido.fim)}`.replace(/\s+/g, ' ').trim();
+        } else {
+          util = esquerda;
+          descartadas.push({ linha: indice + 1, texto: trecho.slice(ruido.index).trim(), motivo: 'resumo da fatura' });
+        }
       } else if (ruido) {
         // Ruído na frente: é cabeçalho de seção ("Lançamentos: compras e
         // saques"). Se vier uma data depois dele, a compra começa ali.
