@@ -15,6 +15,7 @@ import { importacao } from './routes/importacao.js';
 import { fatura } from './routes/fatura.js';
 import { extrato } from './routes/extrato.js';
 import { classificacao } from './routes/classificacao.js';
+import { aquecer } from './services/iaLocal.js';
 
 const app = express();
 app.use(cors());
@@ -74,6 +75,9 @@ async function iniciar() {
   await esperarBanco();
   await migrar();
   const semeou = await semear();
+
+  // Solto, sem await: a IA é opcional e o app não espera por ela.
+  aquecer();
 
   app.listen(porta, () => {
     console.log(`FinTrack • API em http://localhost:${porta}`);

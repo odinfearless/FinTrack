@@ -28,6 +28,7 @@
 
 import { db } from '../db/index.js';
 import { normalizar, sugerirCategoria } from './categorias.js';
+import { classificarEmLote } from './iaLocal.js';
 
 /* --------------------------- extração de chaves --------------------------- */
 
@@ -192,6 +193,63 @@ export function sugerir(modelo, descricao, { cartaoId = null, categorias = [] } 
   // Empate fraco no histórico ainda é melhor que nada, mas vai marcado para a
   // tela poder avisar que a sugestão é incerta.
   return aprendido;
+}
+
+/**
+ * Sugere para uma lista inteira, com a IA local no meio da cadeia.
+ *
+ *   histórico  →  IA local  →  lista fixa
+ *
+ * A IA só é consultada sobre o que sobrou: o histórico resolve o repetido na
+ * hora e de graça, e gastar uma chamada de modelo para redescobrir que
+ * "DL*UberRides" é transporte seria desperdiçar segundos por nada. O que sobra
+ * é o estabelecimento inédito — exatamente onde as outras duas fontes são cegas.
+ *
+ * A chamada é uma só para o lote todo, e falha em silêncio: sem a IA no ar, o
+ * resultado é o mesmo de antes dela existir.
+ */
+export async function sugerirEmLote(modelo, itens, { cartaoId = null, categorias = [], usarIA = true } = {}) {
+  const resolvido = new Map();
+  const pendentes = [];
+
+  itens.forEach((item, indice) => {
+    const aprendido = classificarComModelo(modelo, item.descricao, { cartaoId });
+    if (aprendido && aprendido.confianca >= 0.5) {
+      resolvido.set(indice, aprendido);
+      return;
+    }
+    pendentes.push({ indice, descricao: item.descricao, aprendido });
+  });
+
+  if (usarIA && pendentes.length > 0 && categorias.length > 0) {
+    const daIA = await classificarEmLote(pendentes.map((p) => p.descricao), categorias);
+    for (const [ordem, palpite] of daIA) {
+      const alvo = pendentes[ordem];
+      // Abaixo de 0,6 o próprio modelo está dizendo que não sabe; nesse caso a
+      // lista fixa, que é determinística, merece a vez.
+      if (!alvo || palpite.confianca < 0.6) continue;
+      resolvido.set(alvo.indice, {
+        categoria_id: palpite.categoria_id,
+        confianca: palpite.confianca,
+        motivo: `IA local reconheceu "${palpite.marca}"`,
+        aprendido: false,
+        ia: true,
+      });
+    }
+  }
+
+  // O que nem o histórico nem a IA resolveram cai no piso conhecido.
+  for (const { indice, descricao, aprendido } of pendentes) {
+    if (resolvido.has(indice)) continue;
+    const fixo = sugerirCategoria(descricao, categorias);
+    if (fixo) {
+      resolvido.set(indice, { categoria_id: fixo, confianca: null, motivo: 'nome conhecido', aprendido: false });
+    } else if (aprendido) {
+      resolvido.set(indice, aprendido);
+    }
+  }
+
+  return resolvido;
 }
 
 /** O que o modelo aprendeu, para a tela de diagnóstico. */

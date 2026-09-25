@@ -3,6 +3,7 @@ import multer from 'multer';
 import { db, transacao } from '../db/index.js';
 import { extrair, analisar } from '../services/leitorFatura.js';
 import { construirModelo, sugerir } from '../services/classificador.js';
+import { lerImagem, cruzarLeituras } from '../services/iaLocal.js';
 import { despesasDoMes } from '../services/mes.js';
 import { somarMeses, ehMes, mesAtual } from '../lib/mes.js';
 
@@ -65,8 +66,19 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
     // A sugestão do leitor vem da lista fixa de apelidos; aqui ela é revista
     // pelo que o histórico deste cartão ensina. O modelo é montado uma vez por
     // leitura, e não por item — são dezenas de itens e uma consulta só.
+    // Só em imagem, e por um motivo: no PDF a leitura é determinística — as
+    // colunas vêm por coordenada e nenhum dígito se perde. É no print que o
+    // reconhecimento de texto erra, e é lá que a segunda opinião paga os
+    // segundos que custa.
+    let cruzamento = null;
+    let lidos = itens;
+    if (origem === 'imagem') {
+      const vistos = await lerImagem(req.file.buffer);
+      ({ itens: lidos, cruzamento } = cruzarLeituras(itens, vistos));
+    }
+
     const modelo = await construirModelo();
-    const classificados = itens.map((item) => {
+    const classificados = lidos.map((item) => {
       const s = sugerir(modelo, item.descricao, { cartaoId, categorias });
       if (!s?.categoria_id) return item;
       return {
@@ -88,6 +100,9 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
       regioes_usadas: usadas?.length || 0,
       regioes: usadas || [],
       linhas_lidas: linhas.length,
+      // Quantas linhas os dois leitores confirmam, e quantas só um deles viu.
+      // A tela usa isto para dizer em que confiar sem conferir.
+      cruzamento,
       // 'fatura' (uma linha por lançamento) ou 'lista' (extrato de app, com
       // cabeçalho de dia). A tela diz qual foi para o usuário saber por que a
       // leitura saiu como saiu.

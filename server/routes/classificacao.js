@@ -13,7 +13,8 @@
  */
 import { Router } from 'express';
 import { db, transacao } from '../db/index.js';
-import { raizDe, construirModelo, sugerir, resumirModelo } from '../services/classificador.js';
+import { raizDe, construirModelo, sugerirEmLote, resumirModelo } from '../services/classificador.js';
+import { estado as estadoDaIA } from '../services/iaLocal.js';
 
 export const classificacao = Router();
 
@@ -44,12 +45,18 @@ classificacao.get('/pendentes', async (_req, res, next) => {
       grupos.get(chave).push(item);
     }
 
-    const saida = [...grupos.entries()].map(([chave, itens]) => {
+    // Uma chamada de IA para todos os grupos, e não uma por grupo: o custo é o
+    // tempo de percorrer o modelo, então cinquenta chamadas de uma linha
+    // demorariam quase cinquenta vezes mais que uma de cinquenta linhas.
+    const representantes = [...grupos.values()].map((itens) => itens[0]);
+    const sugestoes = await sugerirEmLote(modelo, representantes, { categorias });
+
+    const saida = [...grupos.entries()].map(([chave, itens], ordem) => {
       // O cartão do grupo só é declarado quando todos vieram do mesmo: é ele
       // que habilita a chave por cartão da sugestão.
       const cartoes = new Set(itens.map((i) => i.cartao_id));
       const cartaoId = cartoes.size === 1 ? [...cartoes][0] : null;
-      const sugestao = sugerir(modelo, itens[0].descricao, { cartaoId, categorias });
+      const sugestao = sugestoes.get(ordem) ?? null;
 
       return {
         chave,
@@ -63,6 +70,9 @@ classificacao.get('/pendentes', async (_req, res, next) => {
         sugestao_id: sugestao?.categoria_id ?? null,
         sugestao_motivo: sugestao?.motivo ?? null,
         sugestao_confianca: sugestao?.confianca ?? null,
+        // Marca a origem para a tela poder tratar palpite de IA com mais
+        // reserva que repetição do próprio histórico.
+        sugestao_ia: Boolean(sugestao?.ia),
       };
     }).sort((a, b) => b.quantidade - a.quantidade || b.total - a.total);
 
@@ -72,6 +82,7 @@ classificacao.get('/pendentes', async (_req, res, next) => {
       // Quantas decisões o agrupamento poupa — é o número que justifica a tela.
       decisoes_poupadas: pendentes.length - saida.length,
       modelo: resumirModelo(modelo),
+      ia: await estadoDaIA(),
       itens: saida,
     });
   } catch (erro) { next(erro); }

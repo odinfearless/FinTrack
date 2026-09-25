@@ -470,6 +470,54 @@ E cada grupo resolvido alimenta o classificador. Depois de classificar a
 Drogasil uma vez, uma loja da mesma rede **em outra cidade, nunca vista antes**,
 já chega classificada na importação seguinte.
 
+### A IA local no meio da cadeia
+
+A cadeia completa é:
+
+```
+histórico  →  IA local  →  lista fixa
+```
+
+A IA só é consultada sobre o que sobrou. Gastar uma chamada de modelo para
+redescobrir que `DL*UberRides` é transporte seria desperdiçar segundos por nada;
+o que sobra é o estabelecimento **inédito**, exatamente onde as outras duas
+fontes são cegas.
+
+Roda no container `ia` do compose (Ollama + GPU), sem chave e sem custo por uso.
+**Nada sai da máquina** — a promessa do topo deste arquivo continua de pé. Se o
+container estiver fora, tudo degrada para histórico + lista fixa e o app nem
+avisa.
+
+O modelo é obrigado a **nomear a marca** que reconheceu antes de escolher a
+categoria, e isso mudou o resultado de verdade. Sem a âncora, tudo o que ele não
+conhecia caía numa categoria comum com 80% de confiança — errado e confiante, o
+pior tipo de erro. Com ela, ou existe uma marca real ou ele se abstém: passou a
+acertar `Leroy Merlin` → Casa e a se calar em `PIX TRANSF KELLY D`, que
+realmente não tem categoria. A marca reconhecida aparece na tela como
+explicação.
+
+### Visão: segunda opinião, não substituto
+
+No print de celular o modelo de visão lê a tela e o resultado é **cruzado** com o
+reconhecimento de texto, em vez de substituí-lo:
+
+| | |
+|---|---|
+| Valor nos dois | confirmado |
+| Só no reconhecimento | entra como sempre entrou |
+| Só na visão | entra **desmarcado**, como candidato |
+
+A razão de não eleger um vencedor é o tipo de erro de cada um. O Tesseract erra
+de forma visível — `ce] -R$ 26,75 >` denuncia a si mesmo. Um modelo de visão erra
+de forma plausível: lê 72,88 como 78,88 e nada na tela indica que algo saiu
+errado. Num app de dinheiro, erro invisível é o pior tipo.
+
+Medido no print real: a visão leu os cinco lançamentos com os valores corretos,
+sem faltar nem inventar nenhum. E simulando a falha que o rodapé causava, ela
+resgata a linha perdida — desmarcada, para quem está olhando decidir.
+
+Só roda em imagem. No PDF a leitura é determinística e não precisa de opinião.
+
 ### O que esperar no começo
 
 Ele acerta quando o estabelecimento se repete, e não tem o que dizer sobre um

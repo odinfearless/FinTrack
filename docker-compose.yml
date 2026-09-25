@@ -39,6 +39,43 @@ services:
       retries: 10
       start_period: 10s
 
+  # ---------------------------------------------------------------------------
+  # Modelo de linguagem local. É ele que classifica o estabelecimento que o
+  # histórico nunca viu e que lê o print de celular melhor que o Tesseract.
+  #
+  # Roda em container como o resto, mas com uma exigência a mais: a GPU. Sem o
+  # passthrough abaixo o Ollama cai para CPU — continua funcionando, e para
+  # classificar texto até serve, mas a leitura de imagem passa de segundos para
+  # minutos.
+  # ---------------------------------------------------------------------------
+  ia:
+    image: ollama/ollama:latest
+    container_name: fintrack-ia
+    restart: unless-stopped
+    environment:
+      # Mantém o modelo residente na VRAM entre uma importação e outra. Sem
+      # isto, cada chamada recarrega alguns GB e a primeira resposta demora
+      # dezenas de segundos — o suficiente para parecer travado.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+    volumes:
+      # Por padrão um volume nomeado. `OLLAMA_MODELS` no .env aponta para uma
+      # pasta do host quando já existem modelos baixados lá — evita baixar os
+      # mesmos gigabytes duas vezes.
+      - ${OLLAMA_MODELS:-dados-ollama}:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
   app:
     build: .
     container_name: fintrack-app
@@ -46,11 +83,21 @@ services:
     depends_on:
       banco:
         condition: service_healthy
+      # Sem `service_healthy` de propósito: a IA é uma camada opcional. Se ela
+      # demorar a subir ou estiver fora, o app tem que atender assim mesmo e
+      # sugerir pelo histórico — esperar por ela seria trocar uma melhoria por
+      # uma dependência.
+      ia:
+        condition: service_started
     environment:
       NODE_ENV: production
       PORT: 3333
       # `banco` é o nome do serviço, que no compose já é o nome de rede.
       DATABASE_URL: postgres://${POSTGRES_USER:-fintrack}:${POSTGRES_PASSWORD:-fintrack}@banco:5432/${POSTGRES_DB:-fintrack}
+      # `ia` é o nome do serviço, que no compose já é nome de rede.
+      IA_URL: ${IA_URL:-http://ia:11434}
+      IA_MODELO_TEXTO: ${IA_MODELO_TEXTO:-qwen3:8b}
+      IA_MODELO_VISAO: ${IA_MODELO_VISAO:-qwen3-vl:8b}
     ports:
       - "${APP_PORT:-3333}:3333"
     volumes:
@@ -61,3 +108,4 @@ services:
 
 volumes:
   dados-postgres:
+  dados-ollama:
