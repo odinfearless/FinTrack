@@ -13,7 +13,6 @@ import ContasBancarias from './paginas/ContasBancarias.jsx';
 import Cadastros from './paginas/Cadastros.jsx';
 import Projecao from './paginas/Projecao.jsx';
 import Importar from './paginas/Importar.jsx';
-import Classificar from './paginas/Classificar.jsx';
 
 /* ------------------------------ mês corrente ------------------------------ */
 
@@ -72,7 +71,6 @@ const MENU = [
       { para: '/contas-bancarias', ic: '⛁', texto: 'Contas bancárias' },
       { para: '/cadastros', ic: '⚑', texto: 'Categorias e pessoas' },
       { para: '/importar', ic: '⇪', texto: 'Importar gastos' },
-      { para: '/classificar', ic: '⚛', texto: 'Classificar gastos' },
     ],
   },
 ];
@@ -176,7 +174,6 @@ const TITULOS = {
   '/contas-bancarias': 'Contas bancárias',
   '/cadastros': 'Categorias e pessoas',
   '/importar': 'Importar gastos',
-  '/classificar': 'Classificar gastos',
 };
 
 export default function App() {
@@ -238,7 +235,6 @@ export default function App() {
                 <Route path="/contas-bancarias" element={<ContasBancarias />} />
                 <Route path="/cadastros" element={<Cadastros />} />
                 <Route path="/importar" element={<Importar />} />
-                <Route path="/classificar" element={<Classificar />} />
                 <Route path="*" element={<Navigate to="/painel" replace />} />
               </Routes>
             </main>

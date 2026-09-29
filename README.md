@@ -154,7 +154,6 @@ recolhido no fim da lista, para continuarem alcançáveis.
 - **Contas bancárias** — a conta corrente de onde saem os débitos e onde a receita cai: saldo e limite lidos do extrato
 - **Categorias e pessoas** — classificação e quem reembolsa
 - **Importar gastos** — trazer um `.xlsx`, uma **fatura em PDF/imagem** ou o **extrato da conta em PDF** para dentro do banco
-- **Classificar gastos** — o acervo sem categoria, agrupado por estabelecimento, com sugestão vinda do seu histórico
 
 ## Importando a fatura do cartão
 
@@ -459,42 +458,36 @@ Nada sai da máquina: é contagem sobre as suas próprias linhas, refeita a cada
 importação — sem cache, para que corrigir uma categoria valha já na importação
 seguinte.
 
-### Classificar em grupo
+### O laço
 
-O número de linhas sem categoria assusta mais que o trabalho real: o mesmo
-estabelecimento repete. A tela **Classificar gastos** agrupa por
-estabelecimento, sugere o que o histórico souber e aplica ao grupo inteiro de
-uma vez — cinco compras na mesma farmácia são **uma** decisão.
+Toda categoria que você escolhe — na revisão da importação ou depois, na tela de
+gastos — vira exemplo para a leitura seguinte. Depois de classificar a Drogasil
+uma vez, uma loja da mesma rede **em outra cidade, nunca vista antes**, já chega
+classificada na importação seguinte.
 
-E cada grupo resolvido alimenta o classificador. Depois de classificar a
-Drogasil uma vez, uma loja da mesma rede **em outra cidade, nunca vista antes**,
-já chega classificada na importação seguinte.
+### A IA local: escrita, sem chamador
 
-### A IA local no meio da cadeia
-
-A cadeia completa é:
+Existe uma terceira fonte, entre as duas:
 
 ```
 histórico  →  IA local  →  lista fixa
 ```
 
-A IA só é consultada sobre o que sobrou. Gastar uma chamada de modelo para
-redescobrir que `DL*UberRides` é transporte seria desperdiçar segundos por nada;
-o que sobra é o estabelecimento **inédito**, exatamente onde as outras duas
-fontes são cegas.
+A ideia é consultar o modelo **só sobre o que sobrou**: gastar uma chamada para
+redescobrir que `DL*UberRides` é transporte desperdiça segundos por nada, e o
+que sobra é o estabelecimento inédito, exatamente onde as outras duas fontes são
+cegas. O modelo é obrigado a **nomear a marca** antes de escolher a categoria —
+sem essa âncora tudo o que ele não conhecia caía numa categoria comum com 80% de
+confiança, errado e confiante, o pior tipo de erro. Com ela, ou existe uma marca
+real ou ele se abstém.
 
-Roda no container `ia` do compose (Ollama + GPU), sem chave e sem custo por uso.
-**Nada sai da máquina** — a promessa do topo deste arquivo continua de pé. Se o
-container estiver fora, tudo degrada para histórico + lista fixa e o app nem
-avisa.
+Hoje esse trecho **não roda**: quem chamava `sugerirEmLote()` era a tela
+*Classificar gastos*, removida. A importação usa `sugerir()`, que é histórico +
+lista fixa, sem modelo. O código continua em `services/classificador.js` e
+`services/iaLocal.js`, testado, esperando um chamador — ligá-lo na revisão da
+importação é uma troca de função.
 
-O modelo é obrigado a **nomear a marca** que reconheceu antes de escolher a
-categoria, e isso mudou o resultado de verdade. Sem a âncora, tudo o que ele não
-conhecia caía numa categoria comum com 80% de confiança — errado e confiante, o
-pior tipo de erro. Com ela, ou existe uma marca real ou ele se abstém: passou a
-acertar `Leroy Merlin` → Casa e a se calar em `PIX TRANSF KELLY D`, que
-realmente não tem categoria. A marca reconhecida aparece na tela como
-explicação.
+A metade de **visão** continua em uso, e é a que está descrita a seguir.
 
 ### Visão: segunda opinião, não substituto
 
