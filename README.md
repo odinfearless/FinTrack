@@ -66,6 +66,32 @@ das variáveis `PGHOST`, `PGUSER` e companhia). O padrão aponta para o containe
 | `npm run reset -- --sim` | Esvazia o banco e recria o esquema |
 | `npm run docker:subir` / `docker:parar` | Atalhos do compose |
 
+## Publicando na rede de casa
+
+O `docker compose up -d --build` já publica: a porta do app é mapeada em
+`0.0.0.0`, então qualquer aparelho da mesma rede abre o app pelo endereço da
+máquina — `http://<ip-da-maquina>:3333`, ou pelo nome dela,
+`http://<nome>.local:3333`, que é o que costuma funcionar em celular.
+
+Prefira o nome ao IP: o endereço vem de DHCP e muda quando o roteador quiser.
+
+O que precisa estar de pé:
+
+| | |
+|---|---|
+| Porta 3333 liberada no firewall | o Docker Desktop cria a regra ao publicar a porta pela primeira vez |
+| Docker Desktop subindo com o Windows | Settings → General → *Start Docker Desktop when you sign in* — sem isso, depois de reiniciar o app só volta quando alguém abre o Docker |
+| `restart: unless-stopped` | já está no compose: o container volta sozinho, desde que o Docker esteja rodando |
+
+O Postgres **não** é publicado na rede — fica preso ao `127.0.0.1`, porque a
+senha padrão é `fintrack` e ninguém quer isso aberto.
+
+O app, porém, é publicado **sem autenticação**: quem alcança a porta vê e
+apaga tudo. Isso é aceitável numa rede doméstica em que você conhece os
+aparelhos, e não é aceitável em rede compartilhada, escritório ou Wi-Fi de
+visitante. Expor para fora da LAN — porta no roteador, túnel, VPS — pede login
+antes, não depois.
+
 ## Vindo do SQLite
 
 O app usava um arquivo SQLite. Quem já tem dados lá migra assim, com o banco no
