@@ -2,14 +2,17 @@
  * Detecção das marcações coloridas feitas no próprio PDF.
  *
  * Quando o usuário circula os lançamentos num editor de PDF, o traço vira
- * caminho vetorial no conteúdo da página — não uma anotação. Aqui esses traços
- * são localizados pela cor, e a área que envolvem vira a região a ler.
+ * caminho vetorial — no conteúdo da página, quando o editor achata o desenho, ou
+ * na aparência de uma anotação, quando não achata. Aqui esses traços são
+ * localizados pela cor, e a área que envolvem vira a região a ler.
  *
  * Qualquer cor viva serve: vermelho, verde, azul, rosa. O que separa uma
  * marcação de um logotipo ou de uma tarja de cabeçalho não é a cor, e sim o que
  * ela envolve — marcação cerca várias linhas de texto, decoração não.
  *
- * As regiões saem normalizadas (0 a 1, origem no canto superior esquerdo).
+ * As regiões saem normalizadas (0 a 1, origem no canto superior esquerdo). Aqui
+ * elas ainda são a caixa do traço; o contorno de verdade — o que o traço cerca —
+ * é medido depois, nos pixels da página (`formaDaMarca`, em `rasterizador.js`).
  */
 
 /** Aceita a cor tanto em hex (`#ea4335`) quanto em componentes. */
@@ -46,7 +49,7 @@ const multiplicar = (a, b) => [
 ];
 
 /** Junta caixas que se tocam ou quase — um círculo à mão vira vários traços. */
-function unir(caixas, folga = 0.02) {
+export function unir(caixas, folga = 0.02) {
   const restantes = [...caixas];
   const grupos = [];
 
@@ -78,6 +81,16 @@ function unir(caixas, folga = 0.02) {
 
 const LINHAS_MINIMAS = 3;
 
+const OPERACOES_DE_TEXTO = new Set([
+  'showText', 'showSpacedText', 'nextLineShowText', 'nextLineSetSpacingShowText',
+]);
+
+/** Duas cores praticamente iguais — o mesmo tom gravado com arredondamento diferente. */
+const mesmaCor = (a, b) => {
+  const [x, y] = [paraRgb(a), paraRgb(b)];
+  return Boolean(x && y) && x.every((c, i) => Math.abs(c - y[i]) <= 24);
+};
+
 /** Quantas linhas de texto distintas caem dentro da região. */
 function linhasDentro(regiao, itens, vista) {
   const ys = new Set();
@@ -101,7 +114,9 @@ function linhasDentro(regiao, itens, vista) {
 export async function detectarRegioesMarcadas(documento, pdfjs) {
   const nomeOp = Object.fromEntries(Object.entries(pdfjs.OPS).map(([k, v]) => [v, k]));
   const encontradas = [];
+  const pequenas = [];
   const cores = new Set();
+  const coresDeTexto = new Set();
 
   for (let n = 1; n <= documento.numPages; n += 1) {
     const pagina = await documento.getPage(n);
@@ -122,9 +137,24 @@ export async function detectarRegioesMarcadas(documento, pdfjs) {
 
       if (op === 'save') { pilha.push([...ctm]); continue; }
       if (op === 'restore') { ctm = pilha.pop() || [1, 0, 0, 1, 0, 0]; continue; }
+      // Caneta do Edge, do Acrobat ou do iPad não grava o traço no conteúdo da
+      // página: grava uma anotação, cuja aparência é desenhada no espaço dela
+      // própria. Sem aplicar a matriz da anotação, o círculo saía deslocado para
+      // o canto da página e era descartado — ou pior, aceito no lugar errado.
+      // A conta é a mesma que o pdf.js faz ao desenhar: página × transform × matrix.
+      if (op === 'beginAnnotation') {
+        pilha.push([...ctm]);
+        ctm = multiplicar(args?.[2] || [1, 0, 0, 1, 0, 0], args?.[3] || [1, 0, 0, 1, 0, 0]);
+        continue;
+      }
+      if (op === 'endAnnotation') { ctm = pilha.pop() || [1, 0, 0, 1, 0, 0]; continue; }
       if (op === 'transform') { ctm = multiplicar(ctm, args); continue; }
       if (op === 'setStrokeRGBColor') { corTraco = paraRgb(args[0] ?? args); continue; }
       if (op === 'setFillRGBColor') { corPreenchimento = paraRgb(args[0] ?? args); continue; }
+      if (OPERACOES_DE_TEXTO.has(op)) {
+        if (ehColorida(corPreenchimento)) coresDeTexto.add(chaveCor(corPreenchimento));
+        continue;
+      }
       if (op !== 'constructPath') continue;
 
       const cor = [corTraco, corPreenchimento].find(ehColorida);
@@ -164,9 +194,13 @@ export async function detectarRegioesMarcadas(documento, pdfjs) {
           if (regiao.largura < 0.03 || regiao.altura < 0.005) continue;
           // A prova de que é marcação, e não logotipo ou tarja: ela cerca várias
           // linhas de texto. Decoração colorida raramente cerca alguma.
-          if (linhasDentro(regiao, conteudo.items, vista) < LINHAS_MINIMAS) continue;
-          encontradas.push({ pagina: n, cor: chave, ...regiao });
-          cores.add(chave);
+          const linhas = linhasDentro(regiao, conteudo.items, vista);
+          if (linhas >= LINHAS_MINIMAS) {
+            encontradas.push({ pagina: n, cor: chave, ...regiao });
+            cores.add(chave);
+          } else if (linhas > 0) {
+            pequenas.push({ pagina: n, cor: chave, ...regiao });
+          }
         }
       }
     }
@@ -174,6 +208,26 @@ export async function detectarRegioesMarcadas(documento, pdfjs) {
     pagina.cleanup();
   }
 
+  // Caneta não escreve texto; a cor da marca do banco escreve. Na fatura do
+  // Inter, o laranja que contorna os quadros "Total da sua fatura" e "Previsão
+  // de pontos" é o mesmo do valor "R$ 2.352,51" em destaque — e esses quadros
+  // eram tomados por marcação: a página 1, que ninguém circulou, entrava na
+  // leitura, e a tela contava nove áreas circuladas onde havia quatro. Uma cor
+  // que aparece em texto em qualquer página é cor do desenho da fatura.
+  const doDesenho = (r) => [...coresDeTexto].some((c) => mesmaCor(c, r.cor));
+  const daCaneta = encontradas.filter((r) => !doDesenho(r));
+  encontradas.length = 0;
+  encontradas.push(...daCaneta);
+  cores.clear();
+  daCaneta.forEach((r) => cores.add(r.cor));
+
   encontradas.cores = [...cores];
+  // O círculo em volta de uma linha só — a compra internacional, a parcela
+  // solta — não tem as três linhas que provam ser marcação, e uma caixa
+  // colorida da própria fatura em volta do total também não. O que os separa é
+  // o contexto: se o documento já tem marcação confirmada nessa mesma cor, o
+  // círculo pequeno é a mesma caneta. Ele sai à parte, como candidato: quem
+  // chama ainda confere no contorno que é um laço fechado, e não uma tarja.
+  encontradas.companheiras = pequenas.filter((p) => cores.has(p.cor));
   return encontradas;
 }

@@ -222,19 +222,39 @@ const ESQUEMA_LEITURA = {
   required: ['lancamentos'],
 };
 
-// O pedido é uma linha só, e isso é medido, não estilo.
+// O pedido é uma linha só, e isso foi medido, não é estilo.
 //
-// Este modelo raciocina antes de responder, e o raciocínio cresce com o número
-// de instruções. Com o pedido curto: 5.5k de raciocínio, resposta completa, os
-// cinco lançamentos da tela com os valores certos. Acrescentando três regras
-// ("ignore o rodapé", "formato da data", "ignore o total"): 11k de raciocínio,
-// o teto de tokens estoura antes de sair a primeira linha de JSON e a leitura
-// volta vazia. Cada instrução a mais aqui custa o dobro do orçamento.
+// Ele nasceu curto quando o modelo ainda raciocinava antes de responder: com
+// três regras a mais ("ignore o rodapé", "formato da data", "ignore o total") o
+// raciocínio dobrava e a leitura voltava vazia. Hoje o raciocínio é pulado (ver
+// `SEM_RACIOCINIO`), mas este pedido é o que foi conferido valor a valor — uma
+// instrução nova precisa de medição nova antes de entrar.
 //
 // O que se perde de instrução se recupera no cruzamento: a data e o descarte de
 // rodapé já vêm do leitor determinístico, e desta leitura só interessa o valor.
 const PEDIDO_VISAO = 'Liste os lancamentos desta fatura em JSON: '
   + '{"lancamentos":[{"descricao":"","valor":0}]}';
+
+// A resposta do modelo já começa com o raciocínio aberto e fechado, vazio.
+//
+// O `qwen3-vl:8b` é a variante que sempre raciocina, e `think: false` não muda
+// nada nele — medido: 14 s e 5 mil caracteres de raciocínio com ou sem a opção,
+// para ler uma linha só. Em lista curta isso é só lentidão; em lista longa é a
+// leitura inteira que some. Numa coluna circulada de 34 lançamentos ele confere
+// linha por linha e não termina: com 3 mil tokens de teto, 36 s e resposta vazia;
+// com 12 mil, 182 s e vazia do mesmo jeito. Dar mais orçamento não resolve,
+// porque o raciocínio não converge.
+//
+// O Ollama continua a última mensagem quando ela é do assistente, em vez de
+// abrir outra. Entregando a resposta com o bloco `<think>` já encerrado, o
+// modelo vai direto ao JSON. Medido na fatura de novembro digitalizada: os 34
+// lançamentos da página 2 em 14 s, os 29 da página 3 em 13 s, o círculo de uma
+// linha em 1 s — os 64 valores certos, sem nenhum a mais.
+//
+// Num modelo sem raciocínio (outro `IA_MODELO_VISAO`) isto não foi medido: ali o
+// bloco vazio é só um começo de resposta, e o JSON continua sendo extraído do
+// texto que vier depois dele.
+const SEM_RACIOCINIO = { role: 'assistant', content: '<think>\n\n</think>\n\n' };
 
 /**
  * Lê uma imagem de fatura e devolve os lançamentos que o modelo enxergou.
@@ -256,16 +276,30 @@ export async function lerImagem(buffer, { sinal } = {}) {
       // raciocínio. Pedir o JSON no prompt e extraí-lo funciona.
       options: {
         temperature: 0,
-        // Os dois limites são o que faz a leitura existir. Nos padrões, o
-        // raciocínio do modelo consome a janela inteira e a resposta é cortada
-        // antes de sair uma linha sequer de JSON.
+        // A janela é a soma da imagem com a resposta, e as duas contas fecham
+        // nela. A imagem ocupa de 2 a 3,4 mil tokens no recorte de uma página
+        // circulada, e 4,1 mil na página inteira sem marcação (o Ollama reduz
+        // antes de olhar). A resposta agora é só o JSON, perto de 40 tokens por
+        // lançamento — 34 gastaram 1,3 mil; o maior recorte medido, 56. O teto
+        // de 4 mil cabe uns 100 lançamentos sem passar da janela.
         num_ctx: 8192,
-        num_predict: 3000,
+        num_predict: 4000,
       },
+      // A imagem vai na resolução em que o reconhecimento a leu. Reduzir não
+      // compensa: na metade, o recorte de 34 lançamentos saiu 0,3 s mais rápido
+      // — o tempo é o da resposta, não o da imagem — e com 3 valores errados.
       messages: [
         { role: 'user', content: PEDIDO_VISAO, images: [buffer.toString('base64')] },
+        SEM_RACIOCINIO,
       ],
     }, LIMITE_VISAO);
+
+    // Resposta cortada no teto é leitura perdida, e antes ela sumia sem deixar
+    // rastro: a importação seguia só com o reconhecimento de texto e ninguém
+    // ficava sabendo por quê.
+    if (resposta?.done_reason === 'length' && sinal !== 'silencioso') {
+      console.warn(`FinTrack • leitura por visão cortada no teto de ${resposta.eval_count} tokens`);
+    }
 
     const conteudo = resposta?.message?.content;
     if (!conteudo) return null;
@@ -289,6 +323,61 @@ export async function lerImagem(buffer, { sinal } = {}) {
       .filter((l) => l.descricao && Number.isFinite(l.valor) && l.valor !== 0);
   } catch (erro) {
     if (sinal !== 'silencioso') console.warn('FinTrack • leitura por visão indisponível:', erro.message);
+    return null;
+  }
+}
+
+/* -------------------------- marcação na imagem ---------------------------- */
+
+// Uma letra, e a alternativa de dizer que nenhuma serve. Curto de propósito: é
+// a diferença entre 5 e 33 segundos, e entre uma resposta e nenhuma.
+const PEDIDO_ESCOLHA = 'Qual retangulo foi desenhado a mao por uma pessoa, '
+  + 'em volta de linhas de texto? Responda so a letra, ou N se nenhum.';
+
+/**
+ * Entre as manchas coloridas de uma página, qual é a caneta do usuário.
+ *
+ * Esta função não mede nada — as coordenadas já vieram da varredura de pixels,
+ * que é exata. Ela só desempata, e o formato da pergunta é o que a torna
+ * confiável.
+ *
+ * A medição que levou a este desenho: pedir a caixa ao modelo (`box_2d`, o
+ * formato de ancoragem da própria família Qwen) funcionou algumas vezes — 0,7%
+ * de erro, 5 segundos — e falhou em outras com o mesmo pedido e a mesma
+ * imagem: raciocínio de 4,5k caracteres, orçamento de tokens estourado,
+ * resposta vazia, 17 segundos. Dando mais orçamento ele termina, mas **erra
+ * mais**: 8,6k de raciocínio e 12,7% de erro. Coordenada é medida, e medir não
+ * é o que ele faz bem.
+ *
+ * Responder uma letra é. A saída é um caractere: ou corresponde a uma candidata
+ * que a varredura já mediu, ou é descartada — não existe resposta 12% fora do
+ * lugar.
+ */
+export async function escolherMarcacao(png, quantidade, { sinal } = {}) {
+  if (quantidade < 1) return null;
+  try {
+    const resposta = await chamar('/api/chat', {
+      model: MODELO_VISAO,
+      stream: false,
+      // Orçamento curto de propósito. Se o modelo começar a divagar, o melhor
+      // resultado é ele não responder: quem chama trata o silêncio como "não
+      // sei" e cai para a regra determinística.
+      options: { temperature: 0, num_ctx: 8192, num_predict: 1200 },
+      messages: [
+        { role: 'user', content: PEDIDO_ESCOLHA, images: [png.toString('base64')] },
+      ],
+    }, LIMITE_VISAO);
+
+    const conteudo = (resposta?.message?.content || '').trim().toUpperCase();
+    if (!conteudo) return null;
+
+    const letra = conteudo.match(/\b([A-Z])\b/)?.[1];
+    if (!letra || letra === 'N') return null;
+
+    const indice = letra.charCodeAt(0) - 65;
+    return indice >= 0 && indice < quantidade ? indice : null;
+  } catch (erro) {
+    if (sinal !== 'silencioso') console.warn('FinTrack • escolha da marcação indisponível:', erro.message);
     return null;
   }
 }

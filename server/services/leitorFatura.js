@@ -9,8 +9,20 @@
  * erram, e um erro silencioso numa fatura vira dívida errada no painel.
  */
 
+import { fileURLToPath } from 'node:url';
 import { detectarRegioesMarcadas } from './marcacaoColorida.js';
+import {
+  renderizarPagina, pngDe, regioesDeTinta, pareceMarcacao, comRotulos, recortar, enquadrar,
+  ESCALA_OCR, formaDaMarca, dentroDaForma, faixaDaCor,
+} from './rasterizador.js';
+import { escolherMarcacao } from './iaLocal.js';
 import { normalizar, sugerirCategoria } from './categorias.js';
+
+// O pdf.js exige barra final e recusa a barra invertida do Windows, então o
+// caminho do pacote é normalizado uma vez aqui.
+const PASTA_DE_FONTES = `${fileURLToPath(import.meta.resolve('pdfjs-dist/standard_fonts/'))
+  .replaceAll('\\', '/')
+  .replace(/\/+$/, '')}/`;
 
 /* ------------------------------ extração --------------------------------- */
 
@@ -66,8 +78,11 @@ function acharColunas(itens) {
  * Junta os fragmentos de texto do pdf.js em linhas.
  * O PDF não tem "linhas": tem pedaços de texto com coordenadas. Fragmentos com
  * Y parecido e na mesma coluna são a mesma linha; dentro dela, a ordem é a do X.
+ *
+ * Devolve as linhas com a posição de cada pedaço, e não só o texto, porque é
+ * pela posição que se decide se a linha está dentro do que foi circulado.
  */
-function agruparEmLinhas(itens, tolerancia = 3) {
+function montarLinhas(itens, tolerancia = 3) {
   const cortes = acharColunas(itens);
   const coluna = (x) => cortes.filter((c) => x >= c).length;
 
@@ -78,29 +93,52 @@ function agruparEmLinhas(itens, tolerancia = 3) {
     const x = item.transform[4];
     const y = item.transform[5];
     const col = coluna(x);
+    const pedaco = {
+      x, y, texto, largura: Math.abs(item.width || 0), altura: Math.abs(item.height || 0), meio: item.meio,
+    };
 
     const existente = linhas.find((l) => l.col === col && Math.abs(l.y - y) <= tolerancia);
-    if (existente) existente.pedacos.push({ x, texto });
-    else linhas.push({ y, col, pedacos: [{ x, texto }] });
+    if (existente) existente.pedacos.push(pedaco);
+    else linhas.push({ y, col, pedacos: [pedaco] });
   }
 
-  return linhas
-    // Coluna da esquerda inteira, depois a da direita: é a ordem de leitura da
-    // fatura, e é o que mantém cada lançamento junto do seu próprio valor.
-    .sort((a, b) => a.col - b.col || b.y - a.y)
-    .map((l) => l.pedacos
-      .sort((a, b) => a.x - b.x)
-      .map((p) => p.texto)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim())
-    .filter(Boolean);
+  // Coluna da esquerda inteira, depois a da direita: é a ordem de leitura da
+  // fatura, e é o que mantém cada lançamento junto do seu próprio valor.
+  return linhas.sort((a, b) => a.col - b.col || b.y - a.y);
 }
+
+/**
+ * O texto da linha, com espaço só onde há espaço de verdade.
+ *
+ * O PDF quebra uma palavra em dois pedaços quando ajusta o espaçamento entre
+ * duas letras: na fatura do Inter, o "P" de "PAGAMENTO" é um pedaço e
+ * "AGAMENTO ON LINE" é outro, começando 1pt *antes* do fim do primeiro. Juntar
+ * sempre com espaço dava "P AGAMENTO" — e assim o pagamento da fatura anterior
+ * escapava do filtro de resumo e entrava como compra de R$ 1.915,73. Pedaços
+ * que se encostam (vão menor que um décimo da altura da letra) são a mesma
+ * palavra.
+ *
+ * Só vale para o texto do próprio PDF. A palavra reconhecida na imagem (que
+ * traz `meio`) já vem separada pelo reconhecimento, e a caixa dela é justa na
+ * tinta — medir vão ali colaria palavras de verdade.
+ */
+const textoDaLinha = (linha) => {
+  let texto = '';
+  let anterior = null;
+  for (const p of [...linha.pedacos].sort((a, b) => a.x - b.x)) {
+    const vao = anterior ? p.x - (anterior.x + anterior.largura) : Infinity;
+    const encosta = anterior && p.meio === undefined && anterior.largura > 0
+      && vao < (p.altura || anterior.altura || 6) * 0.1;
+    texto += (encosta ? '' : ' ') + p.texto;
+    anterior = p;
+  }
+  return texto.replace(/\s+/g, ' ').trim();
+};
 
 /**
  * Regiões marcadas pelo usuário, em coordenadas normalizadas (0 a 1) com origem
  * no canto superior esquerdo da página — o mesmo referencial da tela.
- * `{ pagina, x, y, largura, altura }`
+ * `{ pagina, x, y, largura, altura, forma? }`
  */
 function regioesDaPagina(regioes, pagina) {
   if (!Array.isArray(regioes) || regioes.length === 0) return null;
@@ -108,9 +146,207 @@ function regioesDaPagina(regioes, pagina) {
   return daPagina.length > 0 ? daPagina : [];
 }
 
+/**
+ * Com o contorno medido, vale o contorno: o que está na caixa mas fora do laço
+ * fica de fora. Sem ele — traço que não deixou tinta na página renderizada —,
+ * vale a caixa, como sempre valeu.
+ */
 function dentroDeAlguma(regioes, nx, ny) {
-  return regioes.some((r) => nx >= r.x && nx <= r.x + r.largura
-    && ny >= r.y && ny <= r.y + r.altura);
+  return regioes.some((r) => (r.forma
+    ? dentroDaForma(r.forma, nx, ny)
+    : nx >= r.x && nx <= r.x + r.largura && ny >= r.y && ny <= r.y + r.altura));
+}
+
+/**
+ * O pedaço abre um lançamento? Começa com data **e** vem nome de loja junto ou
+ * logo depois. A segunda condição é o que separa a data da compra da parcela:
+ * "04/10" seguido de "171,43" é a parcela 4 de 10 no fim da descrição, e cortar
+ * ali separaria a compra do próprio valor.
+ */
+function abreLancamento(pedaco, seguinte) {
+  const texto = pedaco.texto.trim();
+  // Data numérica ("05/08") ou por extenso ("15 de jul. 2026", do Inter).
+  const data = texto.match(RX_COMECA_COM_DATA) || texto.match(RX_DATA_TEXTO);
+  if (!data) return false;
+  if (/\p{L}{3}/u.test(texto.slice(data[0].length))) return true;
+  return Boolean(seguinte && /\p{L}{3}/u.test(seguinte.texto));
+}
+
+/** Quanto do texto destes pedaços está dentro da marcação, de 0 a 1. */
+function fracaoDentro(pedacos, regioes, vista) {
+  let dentro = 0;
+  let total = 0;
+  for (const p of pedacos) {
+    // Um ponto a cada 3pt de texto, na altura do meio das letras. No PDF a
+    // posição do pedaço é a linha de base; na palavra reconhecida, já é o meio.
+    const n = Math.max(1, Math.round(p.largura / 3));
+    const meio = p.meio ?? p.y + (p.altura || 8) * 0.35;
+    const ny = (vista.height - meio) / vista.height;
+    for (let k = 0; k < n; k += 1) {
+      const nx = (p.x + (p.largura * (k + 0.5)) / n) / vista.width;
+      total += 1;
+      if (dentroDeAlguma(regioes, nx, ny)) dentro += 1;
+    }
+  }
+  return total ? dentro / total : 0;
+}
+
+const ehValor = (texto) => /\d,\d{2}(?!\d)/.test(texto);
+
+// Até onde o traço pode ter cortado um pedaço que ainda é da linha marcada.
+const ALCANCE_DO_RESGATE = 15;
+
+/**
+ * O pedaço encosta na marcação pelo lado indicado? Anda até 15pt a partir da
+ * borda dele, na altura do meio do texto, procurando o lado de dentro.
+ *
+ * É o que limita o resgate ao que o traço cortou rente. Sem isto, na fatura
+ * digitalizada, uma linha cujo valor o reconhecimento leu errado ("29200") ia
+ * buscar o primeiro valor à direita — e achava o total da coluna vizinha,
+ * fora da marca, a 200pt dali.
+ */
+function encostaNaMarca(p, lado, regioes, vista) {
+  const meio = p.meio ?? p.y + (p.altura || 8) * 0.35;
+  const ny = (vista.height - meio) / vista.height;
+  const borda = lado === 'esquerda' ? p.x : p.x + p.largura;
+  const sentido = lado === 'esquerda' ? -1 : 1;
+  for (let d = 0; d <= ALCANCE_DO_RESGATE; d += 3) {
+    if (dentroDeAlguma(regioes, (borda + sentido * d) / vista.width, ny)) return true;
+  }
+  return false;
+}
+
+/**
+ * Fica com o que está dentro da marcação.
+ *
+ * Cada pedaço de texto entra ou sai pela própria posição — e a linha não decide
+ * nada em bloco, porque ela junta o que não deveria: na fatura de novembro a
+ * compra da Uber, dentro do laço, vinha na mesma linha do título "Novo teto de
+ * juros do cartão de crédito", fora dele, e mais largo. Decidindo pela maior
+ * parte da linha, a compra saía junto com o título.
+ *
+ * Mas pedaço a pedaço sozinho perde o que o traço feito à mão corta: ele passa
+ * raspando o fim da linha, deixa a descrição dentro e o valor fora, e o
+ * lançamento chegava à análise sem valor — e sumia sem aviso. Por isso há um
+ * resgate, e só dentro do mesmo lançamento (do pedaço que abre com a data até o
+ * próximo): se a descrição ficou dentro, voltam a data que abriu o lançamento e,
+ * quando nenhum valor ficou, o primeiro valor à direita — desde que encostem no
+ * traço (`encostaNaMarca`). Texto solto do lado de fora — título, legenda, a
+ * coluna vizinha — não volta nunca.
+ */
+function filtrarPelaMarca(linhas, regioes, vista) {
+  const saida = [];
+  for (const linha of linhas) {
+    const pedacos = [...linha.pedacos].sort((a, b) => a.x - b.x);
+    const trechos = [];
+    pedacos.forEach((p, i) => {
+      if (trechos.length === 0 || abreLancamento(p, pedacos[i + 1])) trechos.push([]);
+      trechos[trechos.length - 1].push(p);
+    });
+
+    const ficam = [];
+    for (const trecho of trechos) {
+      const dentro = trecho.filter((p) => fracaoDentro([p], regioes, vista) >= 0.5);
+      if (dentro.length === 0) continue;
+      ficam.push(...dentro);
+
+      if (!/\p{L}{3}/u.test(dentro.map((p) => p.texto).join(' '))) continue;
+      const [primeiro] = trecho;
+      if (!dentro.includes(primeiro) && abreLancamento(primeiro, trecho[1])
+        && encostaNaMarca(primeiro, 'direita', regioes, vista)) ficam.push(primeiro);
+      if (!dentro.some((p) => ehValor(p.texto))) {
+        const ultimoX = Math.max(...dentro.map((p) => p.x));
+        const valor = trecho.find((p) => p.x > ultimoX && ehValor(p.texto));
+        if (valor && encostaNaMarca(valor, 'esquerda', regioes, vista)) ficam.push(valor);
+      }
+    }
+    if (ficam.length > 0) saida.push({ ...linha, pedacos: ficam.sort((a, b) => a.x - b.x) });
+  }
+  return saida;
+}
+
+// Mais de quatro manchas coloridas numa página não é alguém marcando
+// lançamentos — é o desenho da fatura. Perguntar sobre todas custaria caro para
+// escolher entre listras de tabela.
+const LIMITE_CANDIDATAS = 4;
+
+// Quantas manchas têm o contorno medido antes da escolha. Mais que o limite da
+// pergunta ao modelo, porque numa fatura colorida a tarja e o rodapé são
+// maiores que um círculo em volta de uma linha só, e o círculo ficaria de fora
+// da lista se ela fosse cortada antes.
+const LIMITE_CONTORNOS = 8;
+
+/**
+ * Procura a marcação nos pixels da página, quando o arquivo não trouxe traço
+ * vetorial nenhum.
+ *
+ * A varredura de tinta mede; o contorno separa; o modelo só desempata.
+ *
+ * Laço fechado em volta de texto é caneta — tarja, listra e logotipo são
+ * manchas cheias, e o contorno sabe a diferença (`formaDaMarca`). Então quando
+ * há laços na página, todos entram, sem pergunta: antes, com dois círculos e uma
+ * tarja colorida, o modelo era chamado para escolher **um**, levava um minuto,
+ * não escolhia nenhum, e a página era lida inteira — inclusive o que estava fora
+ * dos dois círculos. O modelo segue entrando onde a forma não decide: várias
+ * manchas e nenhuma delas um laço (um marca-texto, por exemplo).
+ */
+async function marcacaoNaImagem(documento, paginas) {
+  const encontradas = [];
+
+  for (let n = 1; n <= paginas; n += 1) {
+    const canvas = await renderizarPagina(documento, n);
+
+    const medidas = regioesDeTinta(canvas).regioes
+      .filter(pareceMarcacao)
+      .slice(0, LIMITE_CONTORNOS)
+      .map((c) => ({ ...c, forma: formaDaMarca(canvas, c, c.faixa) }));
+
+    if (medidas.length === 0) continue;
+
+    const lacos = medidas.filter((c) => c.forma?.lacos > 0);
+    if (lacos.length > 0) {
+      encontradas.push(...lacos.map((c) => ({ pagina: n, origem: 'pixels', ...c })));
+      continue;
+    }
+
+    const candidatas = medidas.slice(0, LIMITE_CANDIDATAS);
+    if (candidatas.length === 1) {
+      encontradas.push({ pagina: n, origem: 'pixels', ...candidatas[0] });
+      continue;
+    }
+
+    const escolhida = await escolherMarcacao(
+      pngDe(comRotulos(canvas, candidatas)),
+      candidatas.length,
+    );
+    // Modelo fora do ar, em dúvida, ou dizendo que nenhuma serve: a página fica
+    // sem região, o que significa lê-la inteira. É o comportamento de sempre —
+    // errar para o lado de trazer demais, que o usuário vê e desmarca, e não
+    // para o lado de recortar no lugar errado, que ele não tem como perceber.
+    if (escolhida !== null) {
+      encontradas.push({ pagina: n, origem: 'ia', ...candidatas[escolhida] });
+    }
+  }
+
+  return encontradas;
+}
+
+/**
+ * Mede o contorno das marcas que vieram do traço vetorial.
+ *
+ * O detector vetorial sabe onde há tinta da caneta, mas devolve a caixa dela.
+ * O contorno sai dos pixels da página renderizada, na cor que o detector achou
+ * — um logotipo de outra cor dentro da caixa não vira parede.
+ */
+async function contornar(documento, regioes) {
+  const paginas = [...new Set(regioes.map((r) => r.pagina))];
+  const porPagina = new Map();
+  for (const n of paginas) porPagina.set(n, await renderizarPagina(documento, n));
+
+  return regioes.map((r) => {
+    const faixa = faixaDaCor(r.cor);
+    return { ...r, faixa, forma: formaDaMarca(porPagina.get(r.pagina), r, faixa) };
+  });
 }
 
 async function extrairDePdf(buffer) {
@@ -123,6 +359,14 @@ async function extrairDePdf(buffer) {
     data: new Uint8Array(buffer),
     isEvalSupported: false,
     useSystemFonts: true,
+    // Necessário desde que a página passou a ser desenhada, e não só lida.
+    // Fatura que usa as fontes padrão do PDF (Helvetica, Times) não traz
+    // desenho de letra nenhum dentro do arquivo: sem apontar onde estão as
+    // substitutas, o pdf.js extrai o texto normalmente mas **renderiza a página
+    // em branco** — e aí o reconhecimento lê uma folha vazia e a marcação é
+    // procurada num nada. Aponta para o próprio pacote, não para uma CDN: a
+    // leitura continua funcionando sem internet.
+    standardFontDataUrl: PASTA_DE_FONTES,
   });
 
   const linhas = [];
@@ -130,6 +374,8 @@ async function extrairDePdf(buffer) {
   const dimensoes = [];
   let regioes = [];
   let origemDaMarcacao = 'nenhuma';
+  let leituraPorImagem = false;
+  const imagens = [];
 
   try {
     const documento = await tarefa.promise;
@@ -140,8 +386,25 @@ async function extrairDePdf(buffer) {
     // nenhuma, lê o documento inteiro.
     const detectadas = await detectarRegioesMarcadas(documento, pdfjs);
     if (detectadas.length > 0) {
-      regioes = detectadas;
+      // Os círculos pequenos da mesma caneta só entram se o contorno confirmar
+      // que são laços — ver `companheiras` em marcacaoColorida.js.
+      const candidatas = [
+        ...detectadas,
+        ...(detectadas.companheiras || []).map((r) => ({ ...r, companheira: true })),
+      ];
+      regioes = (await contornar(documento, candidatas))
+        .filter((r) => !r.companheira || r.forma?.lacos > 0)
+        .map(({ companheira, ...r }) => r);
       origemDaMarcacao = 'arquivo';
+    } else {
+      // Nenhum traço no conteúdo do PDF. Pode não haver marca — e pode haver
+      // uma que só existe em pixels, porque a página foi digitalizada ou
+      // achatada. Olhar a imagem é a única forma de saber.
+      const achadas = await marcacaoNaImagem(documento, paginas);
+      if (achadas.length > 0) {
+        regioes = achadas;
+        origemDaMarcacao = achadas.some((r) => r.origem === 'ia') ? 'ia' : 'pixels';
+      }
     }
 
     for (let n = 1; n <= paginas; n += 1) {
@@ -158,28 +421,67 @@ async function extrairDePdf(buffer) {
       }
 
       const conteudo = await pagina.getTextContent();
-      const itens = daPagina
-        ? conteudo.items.filter((item) => {
-          // O PDF conta o Y de baixo para cima; a tela, de cima para baixo.
-          const x = item.transform[4] / vista.width;
-          const y = (vista.height - item.transform[5]) / vista.height;
-          return dentroDeAlguma(daPagina, x, y);
-        })
-        : conteudo.items;
+      // As linhas são montadas com a página inteira e só depois filtradas: as
+      // colunas saem das datas alinhadas, e com mais datas a conta é mais firme
+      // do que olhando só o pedaço marcado.
+      const todas = montarLinhas(conteudo.items);
+      const escolhidas = daPagina ? filtrarPelaMarca(todas, daPagina, vista) : todas;
 
-      linhas.push(...agruparEmLinhas(itens));
+      linhas.push(...escolhidas.map(textoDaLinha).filter(Boolean));
       pagina.cleanup();
+    }
+
+    // Texto nenhum no arquivo: é página digitalizada. Antes isto era o fim da
+    // leitura, com um recado pedindo para salvar as páginas como imagem e
+    // enviá-las de novo. A página já está renderizada aqui — dá para fazer isso
+    // pelo usuário, e ainda dentro do recorte que ele marcou.
+    if (linhas.join('').length < 40) {
+      const lidas = await lerPaginasRenderizadas(documento, regioes, paginas);
+      if (lidas.linhas.length > 0) {
+        linhas.push(...lidas.linhas);
+        imagens.push(...lidas.imagens);
+        leituraPorImagem = true;
+      }
     }
   } finally {
     await tarefa.destroy();
   }
 
-  return { linhas, paginas, dimensoes, regioes, origemDaMarcacao };
+  // A grade do contorno é trabalho interno e pesa — serializada, seriam dezenas
+  // de milhares de células na resposta. Para fora vai quantas áreas ela fecha.
+  const resumo = regioes.map(({ forma, faixa, ...r }) => ({
+    ...r, areas: forma ? forma.lacos + forma.abertas : 1,
+  }));
+
+  return {
+    linhas, paginas, dimensoes, regioes: resumo, origemDaMarcacao, leituraPorImagem, imagens,
+  };
 }
 
 const emLinhas = (texto) => texto.split('\n')
   .map((l) => l.replace(/\s+/g, ' ').trim())
   .filter(Boolean);
+
+/**
+ * As linhas como o reconhecimento as viu, cada uma com as suas palavras e a
+ * caixa de cada palavra em pixels da imagem lida.
+ */
+function gruposDoReconhecimento(dados) {
+  const grupos = [];
+  for (const bloco of dados.blocks || []) {
+    for (const paragrafo of bloco.paragraphs || []) {
+      for (const linha of paragrafo.lines || []) {
+        const palavras = [];
+        for (const palavra of linha.words || []) {
+          const texto = (palavra.text || '').trim();
+          if (texto && palavra.bbox) palavras.push({ texto, ...palavra.bbox });
+        }
+        if (palavras.length > 0) grupos.push(palavras);
+      }
+    }
+  }
+  return grupos;
+}
 
 /**
  * Refaz as linhas a partir da posição das palavras na imagem.
@@ -193,18 +495,7 @@ const emLinhas = (texto) => texto.split('\n')
  * está na mesma altura são a mesma linha, e dentro dela a ordem é a do X — o
  * mesmo raciocínio que já monta as linhas de um PDF.
  */
-function linhasPorPosicao(dados) {
-  const palavras = [];
-  for (const bloco of dados.blocks || []) {
-    for (const paragrafo of bloco.paragraphs || []) {
-      for (const linha of paragrafo.lines || []) {
-        for (const palavra of linha.words || []) {
-          const texto = (palavra.text || '').trim();
-          if (texto && palavra.bbox) palavras.push({ texto, ...palavra.bbox });
-        }
-      }
-    }
-  }
+function gruposPorPosicao(palavras) {
   if (palavras.length < 4) return null;
 
   // A tolerância sai da própria imagem: print de celular e foto de fatura têm
@@ -213,24 +504,34 @@ function linhasPorPosicao(dados) {
   const tolerancia = Math.max((alturas[Math.floor(alturas.length / 2)] || 10) * 0.6, 4);
 
   const linhas = [];
-  for (const p of palavras.sort((a, b) => (a.y0 + a.y1) - (b.y0 + b.y1))) {
+  for (const p of [...palavras].sort((a, b) => (a.y0 + a.y1) - (b.y0 + b.y1))) {
     const centro = (p.y0 + p.y1) / 2;
     const atual = linhas[linhas.length - 1];
     if (atual && centro - atual.centro <= tolerancia) atual.palavras.push(p);
     else linhas.push({ centro, palavras: [p] });
   }
-
-  return linhas
-    .map((l) => l.palavras.sort((a, b) => a.x0 - b.x0).map((p) => p.texto).join(' ').trim())
-    .filter(Boolean);
+  return linhas.map((l) => l.palavras.sort((a, b) => a.x0 - b.x0));
 }
 
+const textoDoGrupo = (palavras) => palavras.map((p) => p.texto).join(' ').trim();
+
+function linhasPorPosicao(dados) {
+  const grupos = gruposPorPosicao(gruposDoReconhecimento(dados).flat());
+  return grupos ? grupos.map(textoDoGrupo).filter(Boolean) : null;
+}
+
+// Entre duas leituras da mesma imagem vence a que reconhece mais lançamentos.
+const contarLancamentos = (linhas) => (linhas ? analisar(linhas, { mes: '2000-01' }).itens.length : -1);
+
 /**
- * Imagem é sempre lida por inteiro: a marcação vermelha é reconhecida no traço
- * vetorial do PDF, e numa foto ela seria só pixels — detectá-la exigiria varrer
- * a imagem, o que é outro problema.
+ * Empresta um reconhecedor de texto e garante que ele seja encerrado.
+ *
+ * O worker é um processo à parte: sem encerrá-lo, cada leitura deixaria um para
+ * trás e o servidor iria acumulando memória a cada importação. E ele é caro de
+ * abrir — por isso a função empresta **um** worker para o trabalho inteiro, e
+ * não um por página.
  */
-async function extrairDeImagem(buffer) {
+async function comReconhecedor(trabalho) {
   let Tesseract;
   try {
     Tesseract = (await import('tesseract.js')).default;
@@ -243,23 +544,9 @@ async function extrairDeImagem(buffer) {
   let worker;
   try {
     worker = await Tesseract.createWorker('por');
-    // A posição das palavras vem em `blocks`, e só quando é pedida — o atalho
-    // `Tesseract.recognize` devolve o texto corrido e mais nada.
-    const { data } = await worker.recognize(buffer, {}, { text: true, blocks: true });
-
-    const doTexto = emLinhas(data.text);
-    const porPosicao = linhasPorPosicao(data);
-
-    // Entre as duas leituras vence a que reconhece mais lançamentos. É o único
-    // critério que não depende de adivinhar o layout: quando o texto corrido já
-    // vinha certo — foto de fatura impressa —, é ele que ganha; quando o app foi
-    // lido em duas colunas e nenhum valor ficou junto do seu nome, ganha a
-    // reconstrução por posição.
-    const contar = (linhas) => (linhas ? analisar(linhas, { mes: '2000-01' }).itens.length : -1);
-    const linhas = contar(porPosicao) > contar(doTexto) ? porPosicao : doTexto;
-
-    return { linhas, paginas: 1 };
+    return await trabalho(worker);
   } catch (causa) {
+    if (causa.status) throw causa;
     const erro = new Error(
       'Não foi possível ler a imagem. O reconhecimento de texto baixa um pacote de idioma '
       + 'na primeira execução e precisa de internet nesse momento. '
@@ -268,10 +555,142 @@ async function extrairDeImagem(buffer) {
     erro.status = 502;
     throw erro;
   } finally {
-    // O worker é um processo à parte: sem encerrá-lo, cada leitura deixaria um
-    // para trás e o servidor iria acumulando memória a cada importação.
     await worker?.terminate();
   }
+}
+
+async function reconhecer(worker, buffer) {
+  // A posição das palavras vem em `blocks`, e só quando é pedida — o atalho
+  // `Tesseract.recognize` devolve o texto corrido e mais nada.
+  const { data } = await worker.recognize(buffer, {}, { text: true, blocks: true });
+
+  const doTexto = emLinhas(data.text);
+  const porPosicao = linhasPorPosicao(data);
+
+  // Entre as duas leituras vence a que reconhece mais lançamentos. É o único
+  // critério que não depende de adivinhar o layout: quando o texto corrido já
+  // vinha certo — foto de fatura impressa —, é ele que ganha; quando o app foi
+  // lido em duas colunas e nenhum valor ficou junto do seu nome, ganha a
+  // reconstrução por posição.
+  return contarLancamentos(porPosicao) > contarLancamentos(doTexto) ? porPosicao : doTexto;
+}
+
+/**
+ * Foto ou print: lido por inteiro. A marcação numa foto é só pixels, e
+ * localizá-la ali é o trabalho de `rasterizador.js` — que hoje entra pelo
+ * caminho do PDF, onde a página tem um referencial de coordenadas para o
+ * recorte voltar.
+ */
+async function extrairDeImagem(buffer) {
+  const linhas = await comReconhecedor((worker) => reconhecer(worker, buffer));
+  return { linhas, paginas: 1 };
+}
+
+/**
+ * Lê uma região marcada de uma página digitalizada.
+ *
+ * O reconhecimento lê o enquadramento inteiro da marca, e o que fica é decidido
+ * depois, pela posição de cada palavra, com o mesmo filtro do PDF com texto —
+ * lançamento a lançamento. Um filtro só para as duas origens é o que garante
+ * que "dentro da marca" signifique a mesma coisa nas duas.
+ *
+ * As linhas, porém, são as do reconhecimento, e não as de `montarLinhas`: nele
+ * a parcela ("04/10") chega como palavra solta com cara de data, e a detecção
+ * de colunas por data alinhada a tomava por uma coluna — cortando cada compra
+ * longe do próprio valor.
+ *
+ * Devolve as linhas e a imagem para o modelo de visão — mascarada no que ficou.
+ */
+async function lerRegiaoDigitalizada(worker, canvas, regiao) {
+  const quadro = enquadrar(canvas, regiao);
+  if (!quadro) return { linhas: [], imagem: null };
+
+  const { data } = await worker.recognize(pngDe(recortar(canvas, regiao)), {}, { text: true, blocks: true });
+
+  // Pixels do recorte para pontos da página, com o Y de baixo para cima como o
+  // pdf.js entrega — é o referencial que o filtro espera. A palavra reconhecida
+  // não tem linha de base; o meio da caixa dela é o ponto testado.
+  const escala = ESCALA_OCR;
+  const vista = { width: canvas.width / escala, height: canvas.height / escala };
+  const pedaco = (p) => {
+    const meio = vista.height - (quadro.y + (p.y0 + p.y1) / 2) / escala;
+    return {
+      texto: p.texto,
+      x: (quadro.x + p.x0) / escala,
+      y: meio,
+      meio,
+      largura: (p.x1 - p.x0) / escala,
+      altura: (p.y1 - p.y0) / escala,
+    };
+  };
+
+  // As mesmas duas leituras de `reconhecer` — a ordem do reconhecimento e a
+  // reconstrução por posição —, cada uma filtrada pela marca, e vence a que
+  // reconhece mais lançamentos.
+  const doReconhecimento = gruposDoReconhecimento(data);
+  const leituras = [doReconhecimento, gruposPorPosicao(doReconhecimento.flat())]
+    .filter(Boolean)
+    .map((grupos) => filtrarPelaMarca(grupos.map((g) => ({ pedacos: g.map(pedaco) })), [regiao], vista));
+  const contagens = leituras.map((l) => contarLancamentos(l.map(textoDaLinha)));
+  const escolhidas = leituras[contagens.indexOf(Math.max(...contagens))] || [];
+
+  // A imagem do modelo mostra o miolo do laço mais as linhas que ficaram, com
+  // um respiro em volta de cada uma. O que o filtro tirou não aparece para ele.
+  const caixas = escolhidas.flatMap((l) => l.pedacos).map((p) => {
+    const folga = p.altura * 0.4;
+    return {
+      x: (p.x - folga) * escala,
+      y: (vista.height - p.meio - p.altura / 2 - folga) * escala,
+      largura: (p.largura + folga * 2) * escala,
+      altura: (p.altura + folga * 2) * escala,
+    };
+  });
+
+  return {
+    linhas: escolhidas.map(textoDaLinha).filter(Boolean),
+    imagem: pngDe(recortar(canvas, regiao, { caixas })),
+  };
+}
+
+/**
+ * Lê as páginas que não têm texto no arquivo, a partir da imagem renderizada.
+ *
+ * Havendo marcação, só o que está dentro dela é lido — inclusive pelo modelo de
+ * visão, que recebe as imagens devolvidas aqui. Sem marcação, a página inteira.
+ */
+async function lerPaginasRenderizadas(documento, regioes, paginas) {
+  return comReconhecedor(async (worker) => {
+    const linhas = [];
+    // As mesmas imagens que o reconhecimento leu, para a rota poder mostrá-las
+    // ao modelo de visão e cruzar as duas leituras.
+    const imagens = [];
+
+    for (let n = 1; n <= paginas; n += 1) {
+      const daPagina = regioesDaPagina(regioes, n);
+      if (daPagina && daPagina.length === 0) continue;
+
+      // Renderiza de novo, mais alto: o render guardado é o que o modelo olhou,
+      // e a resolução que serve para ele enxergar a marca não serve para o
+      // reconhecimento ler o texto.
+      const canvas = await renderizarPagina(documento, n, ESCALA_OCR);
+
+      if (!daPagina?.length) {
+        const png = pngDe(canvas);
+        imagens.push(png);
+        linhas.push(...await reconhecer(worker, png));
+        continue;
+      }
+
+      // Com duas marcas na mesma página, cada uma é lida por si: juntá-las numa
+      // caixa só arrastaria para dentro tudo o que estivesse entre elas.
+      for (const regiao of daPagina) {
+        const lida = await lerRegiaoDigitalizada(worker, canvas, regiao);
+        linhas.push(...lida.linhas);
+        if (lida.imagem) imagens.push(lida.imagem);
+      }
+    }
+    return { linhas, imagens };
+  });
 }
 
 export async function extrair(buffer, nomeArquivo, tipoMime = '') {
@@ -282,17 +701,21 @@ export async function extrair(buffer, nomeArquivo, tipoMime = '') {
 
     if (resultado.linhas.join('').length < 40) {
       // Com marcação, pouco texto quase sempre significa região no lugar errado;
-      // sem marcação, significa PDF escaneado. Mensagens diferentes, porque a
+      // sem marcação, e depois de já ter tentado reconhecer a página como
+      // imagem, significa que não há o que ler. Mensagens diferentes, porque a
       // saída para cada caso é diferente.
       const erro = new Error(resultado.origemDaMarcacao !== 'nenhuma'
         ? 'Não foi encontrado texto dentro do que está marcado. Confira se a marcação '
           + 'envolve as linhas de lançamento.'
-        : 'Este PDF parece ser uma imagem escaneada, sem texto selecionável. '
-          + 'Salve as páginas como PNG ou JPG e envie a imagem — aí o reconhecimento de texto entra em ação.');
+        : 'Não foi encontrado texto neste PDF, nem como arquivo nem pelo reconhecimento '
+          + 'da página. Se for um documento digitalizado, uma digitalização mais nítida costuma resolver.');
       erro.status = 422;
       throw erro;
     }
-    return { ...resultado, origem: 'pdf' };
+    // Página digitalizada lida por reconhecimento tem o mesmo tipo de erro de
+    // uma foto, e merece a mesma segunda opinião: a rota usa esta origem para
+    // decidir se cruza a leitura com o modelo de visão.
+    return { ...resultado, origem: resultado.leituraPorImagem ? 'pdf-imagem' : 'pdf' };
   }
 
   return { ...(await extrairDeImagem(buffer)), origem: 'imagem' };
@@ -313,7 +736,7 @@ const RUIDO = [
   // Sem âncora: a linha do pagamento vem com a data na frente ("10/07 Pagamento
   // via conta -10.912,72") e escapava do padrão acima. Ela não é lançamento da
   // fatura — é a quitação da anterior, e entraria como um crédito gigante.
-  /pagamento\s+(via|efetuado|recebido|de\s+fatura)/i,
+  /pagamento\s+(via|efetuado|recebido|de\s+fatura|on[\s-]*line)/i,
   /fatura\s+anterior/i,
   /limite\s+(de\s+cr[ée]dito|dispon[íi]vel|total)/i,
   /vencimento/i,
@@ -359,7 +782,12 @@ const RUIDO = [
 // número de cartão, CEP ou código de autorização com valor.
 // O "R$" precisa ser casado inteiro: com R opcional sozinho, o R final de
 // "BR 45,90" era consumido como se fosse o símbolo da moeda e sumia da descrição.
-const RX_VALOR = /(-)?(?:R\$)?\s?(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})(-)?/g;
+//
+// O "+" na frente é crédito, com ou sem espaço até o "R$": é como o Inter
+// escreve pagamento e estorno ("+ R$ 1.915,73", em verde). O "-" só conta
+// colado no número — separado por espaço, nessa mesma fatura, ele é a coluna
+// "Beneficiário" vazia, e não sinal nenhum.
+const RX_VALOR = /(?:(-)|(\+)\s?)?(?:R\$)?\s?(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})(-)?/g;
 
 // Mesma coisa, aceitando o ponto como separador decimal — só para o print de
 // app, onde o reconhecimento troca a vírgula por ponto com frequência e um
@@ -371,7 +799,19 @@ const RX_VALOR = /(-)?(?:R\$)?\s?(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})(-)?/g;
 const RX_VALOR_PONTO = /(-)?(?:R\$)?\s?(\d{1,3}(?:\.\d{3})*|\d+)[.,](\d{2})(?!\d)(-)?/g;
 
 const RX_DATA_BARRA = /^(\d{2})[/.](\d{2})(?:[/.](\d{2,4}))?\b/;
-const RX_DATA_TEXTO = /^(\d{1,2})\s*(?:de\s*)?(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)/i;
+
+// "12 ago", "15 de jul. 2026", "3 de setembro de 2025". O ponto da abreviação e
+// o ano fazem parte da data: sem consumi-los, a fatura do Inter — que escreve
+// "15 de jul. 2026" — deixava ". 2026" grudado na frente de toda descrição. O
+// nome do mês é casado por extenso só com a continuação que ele de fato tem,
+// para "12 agoMERCADO" não comer o nome da loja.
+const RX_DATA_TEXTO = new RegExp(
+  '^(\\d{1,2})\\s*(?:de\\s*)?'
+  + '(jan(?:eiro)?|fev(?:ereiro)?|mar(?:[çc]o)?|abr(?:il)?|mai(?:o)?|jun(?:ho)?|jul(?:ho)?'
+  + '|ago(?:sto)?|set(?:embro)?|out(?:ubro)?|nov(?:embro)?|dez(?:embro)?)\\.?'
+  + '(?:\\s*(?:de\\s+)?(\\d{4})(?!\\d))?',
+  'i',
+);
 
 // "PARC 03/10", "3/10", "PARCELA 3 DE 10", "03 DE 10"
 const RX_PARCELA = /(?:parc(?:ela)?\.?\s*)?(\d{1,2})\s*(?:\/|\s+de\s+)\s*(\d{1,2})\b/i;
@@ -390,11 +830,17 @@ function acharValores(linha, { aceitarPonto = false } = {}) {
   rx.lastIndex = 0;
   const negativo = /\b(cr[ée]dito|estorno|pagamento)\b/i.test(linha);
 
-  return [...linha.matchAll(rx)].map((m) => ({
-    valor: lerValor({ inteiro: m[2], centavos: m[3] }, Boolean(m[1] || m[4]) || negativo),
-    inicio: m.index,
-    fim: m.index + m[0].length,
-  }));
+  return [...linha.matchAll(rx)].map((m) => {
+    // As duas expressões têm grupos diferentes: só a da fatura reconhece o "+".
+    const [menos, mais, inteiro, centavos, menosNoFim] = aceitarPonto
+      ? [m[1], undefined, m[2], m[3], m[4]]
+      : [m[1], m[2], m[3], m[4], m[5]];
+    return {
+      valor: lerValor({ inteiro, centavos }, Boolean(menos || mais || menosNoFim) || negativo),
+      inicio: m.index,
+      fim: m.index + m[0].length,
+    };
+  });
 }
 
 /** Último valor monetário da linha — em fatura, o valor mora à direita. */
@@ -427,8 +873,10 @@ function acharData(linha, mesReferencia) {
     const dia = Number(texto[1]);
     const mes = MESES_CURTOS[normalizar(texto[2]).slice(0, 3)];
     if (dia >= 1 && dia <= 31 && mes) {
-      let ano = anoRef;
-      if (mes > mesRef + 1) ano -= 1;
+      // Com o ano escrito, vale o ano escrito — a parcela 3 de 5 de uma compra
+      // de julho não precisa ser adivinhada a partir do mês da fatura.
+      let ano = texto[3] ? Number(texto[3]) : anoRef;
+      if (!texto[3] && mes > mesRef + 1) ano -= 1;
       return {
         data: `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`,
         fim: texto[0].length,
@@ -524,6 +972,9 @@ function limparDescricao(bruta) {
     // é do valor que já foi separado, não faz parte do nome.
     .replace(/\s*(em\s+)?(R\$|US\$)?\s*$/i, '')
     .replace(/\s+em$/i, '')
+    // O que sobra de "(Parcela 03 de 05)" depois que a parcela é lida e tirada.
+    .replace(/\(\s*\)|\[\s*\]/g, ' ')
+    .replace(/\s+/g, ' ')
     .replace(/^[\s\-–—•|:*]+/, '')
     .replace(/[\s\-–—•|:*]+$/, '')
     .trim();

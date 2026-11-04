@@ -11,6 +11,11 @@ export const fatura = Router();
 
 const TIPOS_ACEITOS = /\.(pdf|png|jpe?g|webp|bmp|tiff?)$/i;
 
+// Cada página mostrada ao modelo de visão custa segundos. Num documento
+// digitalizado inteiro a segunda opinião deixa de valer a espera, e o teto
+// existe para a importação não ficar refém do tamanho do arquivo.
+const PAGINAS_PARA_A_VISAO = 3;
+
 // Arquivo fica só em memória: uma fatura tem dados sensíveis e não há motivo
 // para deixá-la em disco depois de lida.
 const upload = multer({
@@ -54,11 +59,9 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
     const mes = ehMes(req.body?.mes) ? req.body.mes : mesAtual();
     const cartaoId = req.body?.cartao_id ? Number(req.body.cartao_id) : null;
 
-    const { linhas, origem, paginas, dimensoes, origemDaMarcacao, regioes: usadas } = await extrair(
-      req.file.buffer,
-      req.file.originalname,
-      req.file.mimetype,
-    );
+    const {
+      linhas, origem, paginas, dimensoes, origemDaMarcacao, regioes: usadas, imagens,
+    } = await extrair(req.file.buffer, req.file.originalname, req.file.mimetype);
 
     const categorias = await db.prepare('SELECT id, nome FROM categorias').all();
     const { itens, descartadas, formato, total_fatura: totalFatura } = analisar(linhas, { mes, categorias });
@@ -66,14 +69,26 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
     // A sugestão do leitor vem da lista fixa de apelidos; aqui ela é revista
     // pelo que o histórico deste cartão ensina. O modelo é montado uma vez por
     // leitura, e não por item — são dezenas de itens e uma consulta só.
-    // Só em imagem, e por um motivo: no PDF a leitura é determinística — as
-    // colunas vêm por coordenada e nenhum dígito se perde. É no print que o
-    // reconhecimento de texto erra, e é lá que a segunda opinião paga os
-    // segundos que custa.
+    // Só quando a leitura passou por reconhecimento de texto, e por um motivo:
+    // no PDF com texto de verdade a leitura é determinística — as colunas vêm
+    // por coordenada e nenhum dígito se perde. É no print, e na página
+    // digitalizada, que o reconhecimento erra — e é lá que a segunda opinião
+    // paga os segundos que custa.
     let cruzamento = null;
     let lidos = itens;
-    if (origem === 'imagem') {
-      const vistos = await lerImagem(req.file.buffer);
+    if (origem === 'imagem' || origem === 'pdf-imagem') {
+      // No PDF digitalizado o que o modelo olha são as mesmas imagens que o
+      // reconhecimento leu — já recortadas na marcação, quando havia uma. Mandar
+      // o PDF inteiro não serviria: o modelo de visão recebe imagem.
+      const alvos = origem === 'imagem'
+        ? [req.file.buffer]
+        : (imagens || []).slice(0, PAGINAS_PARA_A_VISAO);
+
+      const vistos = [];
+      for (const alvo of alvos) {
+        const lidosPelaVisao = await lerImagem(alvo);
+        if (lidosPelaVisao) vistos.push(...lidosPelaVisao);
+      }
       ({ itens: lidos, cruzamento } = cruzarLeituras(itens, vistos));
     }
 
@@ -98,6 +113,10 @@ fatura.post('/ler', upload.single('arquivo'), async (req, res, next) => {
       cartao_id: cartaoId,
       marcacao: origemDaMarcacao || 'nenhuma',
       regioes_usadas: usadas?.length || 0,
+      // Quantas áreas circuladas foram lidas. Não é o mesmo que regiões: um
+      // laço grande e um círculo pequeno da mesma caneta podem sair numa região
+      // só, e para quem circulou são duas coisas.
+      areas_marcadas: (usadas || []).reduce((soma, r) => soma + (r.areas || 1), 0),
       regioes: usadas || [],
       linhas_lidas: linhas.length,
       // Quantas linhas os dois leitores confirmam, e quantas só um deles viu.

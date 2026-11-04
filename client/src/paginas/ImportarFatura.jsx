@@ -12,6 +12,16 @@ const TIPOS = [
 
 const EXTENSOES = '.pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff';
 
+// De onde saiu o recorte. Dizer isto importa porque os três caminhos merecem
+// confiança diferente: o traço no arquivo é exato, a varredura de pixels é
+// medida, e a escolha do modelo é palpite — bom, mas palpite. Em todos, o que
+// conta é o interior do traço, e não a caixa em volta dele.
+const ONDE_ACHOU_A_MARCA = {
+  arquivo: ', só de dentro do que está circulado no arquivo — o resto da página foi ignorado',
+  pixels: ', só de dentro do traço colorido encontrado na página — o resto foi ignorado',
+  ia: ', dentro do traço que o modelo apontou como sendo o seu — havia mais de uma área colorida na página',
+};
+
 export default function ImportarFatura({ aoImportar }) {
   const { mes: mesGlobal } = useMes();
   const aviso = useAviso();
@@ -52,8 +62,10 @@ export default function ImportarFatura({ aoImportar }) {
       setItens(r.itens);
       if (r.itens.length === 0) {
         aviso('Nenhum lançamento foi reconhecido no arquivo.', 'erro');
-      } else if (r.marcacao === 'arquivo') {
-        aviso(`${r.regioes_usadas} áreas marcadas no arquivo · ${r.itens.length} lançamentos lidos.`);
+      } else if (r.marcacao !== 'nenhuma') {
+        const areas = r.areas_marcadas || r.regioes_usadas;
+        aviso(`${areas} ${areas === 1 ? 'área circulada' : 'áreas circuladas'} `
+          + `· ${r.itens.length} lançamentos lidos só de dentro ${areas === 1 ? 'dela' : 'delas'}.`);
       } else {
         aviso(`${r.itens.length} lançamentos reconhecidos. Revise antes de importar.`);
       }
@@ -180,7 +192,8 @@ export default function ImportarFatura({ aoImportar }) {
           {arquivo
             ? `${Math.round(arquivo.size / 1024)} KB — clique para trocar`
             : 'PDF com texto selecionável, foto da fatura ou print da lista do app do banco '
-              + '(PNG, JPG). Até 15 MB.'}
+              + '(PNG, JPG). Até 15 MB. No PDF, circule com caneta colorida só os lançamentos '
+              + 'que quer trazer — o que ficar fora do traço é ignorado.'}
         </div>
         <input
           ref={entradaArquivo}
@@ -224,11 +237,21 @@ export default function ImportarFatura({ aoImportar }) {
           <div className="cartao-titulo">Confira antes de importar</div>
           <div className="cartao-legenda">
             {itens.length} lançamentos reconhecidos em {leitura.arquivo}
-            {leitura.marcacao === 'arquivo'
-              && `, dentro das ${leitura.regioes_usadas} áreas circuladas em vermelho no arquivo`}
-            {leitura.origem === 'imagem' && ' (via reconhecimento de texto — vale conferir os valores com atenção)'}
+            {leitura.marcacao !== 'nenhuma' && ONDE_ACHOU_A_MARCA[leitura.marcacao]}
+            {(leitura.origem === 'imagem' || leitura.origem === 'pdf-imagem')
+              && ' (via reconhecimento de texto — vale conferir os valores com atenção)'}
             . Descrição e valor são editáveis aqui mesmo.
           </div>
+
+          {leitura.cruzamento && (
+            <div className="cartao-legenda" style={{ marginTop: 6 }}>
+              Segunda leitura pelo modelo de visão: <b>{leitura.cruzamento.confirmados}</b> valores
+              batem nas duas{leitura.cruzamento.so_no_texto > 0
+                && <>, <b>{leitura.cruzamento.so_no_texto}</b> só o reconhecimento viu</>}
+              {leitura.cruzamento.so_na_visao > 0
+                && <>, <b>{leitura.cruzamento.so_na_visao}</b> só o modelo viu — esses entram desmarcados</>}.
+            </div>
+          )}
 
           {leitura.formato === 'lista' && (
             <div className="aviso" style={{ marginBottom: 14 }}>
