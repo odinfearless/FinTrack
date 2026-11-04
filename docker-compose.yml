@@ -57,6 +57,12 @@ services:
       # isto, cada chamada recarrega alguns GB e a primeira resposta demora
       # dezenas de segundos — o suficiente para parecer travado.
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+    ports:
+      # Mesmo motivo do banco: o app do compose fala com a IA pela rede interna
+      # e não precisa desta porta. Ela existe para o `npm run dev` da própria
+      # máquina alcançar o modelo — e presa ao 127.0.0.1 porque o Ollama não tem
+      # autenticação nenhuma.
+      - "127.0.0.1:${IA_PORT:-11434}:11434"
     volumes:
       # Por padrão um volume nomeado. `OLLAMA_MODELS` no .env aponta para uma
       # pasta do host quando já existem modelos baixados lá — evita baixar os
